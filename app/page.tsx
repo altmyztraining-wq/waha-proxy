@@ -87,7 +87,7 @@ type Toast = {
   message: string;
 };
 
-const DEFAULT_SESSION = "student_reminders_01";
+const DEFAULT_SESSION = "";
 
 function Badge({ value }: { value: string }) {
   const tone =
@@ -174,6 +174,10 @@ function proxyServerFromUrl(value: string) {
 }
 
 export default function DashboardPage() {
+  // QR Modal state
+  const [activeQrSession, setActiveQrSession] = useState<string | null>(null);
+  const [qrKey, setQrKey] = useState(0);
+
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingSender, setSavingSender] = useState(false);
@@ -191,7 +195,13 @@ export default function DashboardPage() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const [rateLimitDelayMs, setRateLimitDelayMs] = useState<number | null>(null);
 
-  const [queueStatus, setQueueStatus] = useState<{PENDING: number, PROCESSING: number, DONE: number, FAILED: number, TOTAL: number} | null>(null);
+  // Campaign & Queue States
+  const [queueStatus, setQueueStatus] = useState<{
+    global: { PENDING: number; PROCESSING: number; DONE: number; FAILED: number; TOTAL: number };
+    campaigns: Array<{ name: string; PENDING: number; PROCESSING: number; DONE: number; FAILED: number; TOTAL: number }>;
+  } | null>(null);
+  const [selectedCampaignName, setSelectedCampaignName] = useState<string>("all");
+  const [campaignName, setCampaignName] = useState("");
   const [campaignAutoPilot, setCampaignAutoPilot] = useState(false);
   const [campaignWorkerRunning, setCampaignWorkerRunning] = useState(false);
   const [resettingQueue, setResettingQueue] = useState(false);
@@ -214,6 +224,15 @@ export default function DashboardPage() {
       setToasts((current) => current.filter((toast) => toast.id !== id));
     }, 4500);
   }, []);
+
+  // QR code auto-refresh
+  useEffect(() => {
+    if (!activeQrSession) return;
+    const interval = setInterval(() => {
+      setQrKey((k) => k + 1);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [activeQrSession]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -287,7 +306,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchQueueStatus();
-    const interval = setInterval(fetchQueueStatus, 5000);
+    // Poll every 10 seconds to reduce log clutter
+    const interval = setInterval(fetchQueueStatus, 10000);
     return () => clearInterval(interval);
   }, [fetchQueueStatus]);
 
@@ -384,7 +404,7 @@ export default function DashboardPage() {
       const response = await fetch("/api/waha/session/manage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, action }),
+        body: JSON.stringify({ sessionName: name, action }),
       });
       const data = await response.json();
 
@@ -503,6 +523,7 @@ export default function DashboardPage() {
         body: JSON.stringify({
           targetPhones: targets,
           messageBody,
+          campaignName: campaignName.trim() || undefined,
         }),
       });
       const data = await response.json();
@@ -513,6 +534,7 @@ export default function DashboardPage() {
 
       addToast("success", `Added ${data.queuedCount} targets to the Campaign Queue!`);
       setTargets(""); // Clear textarea
+      setCampaignName(""); // Clear campaign name input
       await fetchQueueStatus();
     } catch (error) {
       addToast(
@@ -525,10 +547,19 @@ export default function DashboardPage() {
   }
 
   async function resetPendingQueue() {
-    if (!confirm("Are you sure you want to reset all pending jobs in the queue?")) return;
+    const isAll = selectedCampaignName === "all";
+    const confirmMessage = isAll
+      ? "Are you sure you want to reset all pending jobs globally?"
+      : `Are you sure you want to reset pending jobs for campaign "${selectedCampaignName}"?`;
+
+    if (!confirm(confirmMessage)) return;
     setResettingQueue(true);
     try {
-      const response = await fetch("/api/campaign/queue", {
+      const url = isAll
+        ? "/api/campaign/queue"
+        : `/api/campaign/queue?campaignName=${encodeURIComponent(selectedCampaignName)}`;
+
+      const response = await fetch(url, {
         method: "DELETE",
       });
       const data = await response.json();
@@ -620,6 +651,7 @@ export default function DashboardPage() {
 
           <div className="mt-auto pt-10">
             <div className="flex flex-col gap-3">
+              {/* Logout button removed */}
               <a
                 href="http://localhost:3000/dashboard/"
                 target="_blank"
@@ -716,6 +748,52 @@ export default function DashboardPage() {
           {activeTab === "devices" && (
             <div className="fade-in flex flex-col gap-6">
 
+              {/* Create Session Form */}
+              <section className="glass-card p-6 bg-gradient-to-r from-blue-900/10 to-indigo-900/10 border-blue-500/20">
+                <div className="border-b border-white/10 pb-4 mb-5">
+                  <h2 className="text-lg font-semibold text-foreground">Create WAHA Session</h2>
+                  <p className="mt-1 text-xs text-foreground/50">Register and configure a new WhatsApp WebJS container.</p>
+                </div>
+                <form onSubmit={startSession} className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] items-end gap-4">
+                  <div>
+                    <label className="field-label" htmlFor="newSessionName">Session Name</label>
+                    <input
+                      id="newSessionName"
+                      type="text"
+                      className="input-field"
+                      value={sessionName}
+                      onChange={(e) => setSessionName(e.target.value)}
+                      placeholder="e.g. session_01"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="field-label" htmlFor="newSessionProxy">Proxy URL (Optional)</label>
+                    <input
+                      id="newSessionProxy"
+                      type="text"
+                      className="input-field font-mono text-xs"
+                      value={sessionProxyUrl}
+                      onChange={(e) => setSessionProxyUrl(e.target.value)}
+                      placeholder="http://user:pass@ip:port"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={startingSession}
+                    className="btn-primary py-2.5 px-6 whitespace-nowrap h-[42px] flex items-center justify-center gap-2"
+                  >
+                    {startingSession ? (
+                      <>
+                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                        Creating...
+                      </>
+                    ) : (
+                      "Create Session"
+                    )}
+                  </button>
+                </form>
+              </section>
 
               <section className="glass-card overflow-hidden">
                 <div className="border-b border-white/10 p-5">
@@ -729,6 +807,7 @@ export default function DashboardPage() {
                         <th>Status</th>
                         <th>Proxy</th>
                         <th>Account</th>
+                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -741,6 +820,57 @@ export default function DashboardPage() {
                             <td><Badge value={session.status ?? "UNKNOWN"} /></td>
                             <td className="font-mono text-xs text-foreground/70">{session.config?.proxy?.server ?? "NO_PROXY"}</td>
                             <td className="font-mono text-xs">{session.me?.id ?? "-"}</td>
+                            <td>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {/* QR Scan button - show when session needs QR */}
+                                {(session.status === "SCAN_QR_CODE" || session.status === "FAILED") && (
+                                  <button
+                                    onClick={() => { setActiveQrSession(session.name ?? null); setQrKey(0); }}
+                                    className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 rounded border border-blue-500/30 transition-colors"
+                                  >
+                                    Scan QR
+                                  </button>
+                                )}
+                                {/* Start button - when stopped */}
+                                {(session.status === "STOPPED" || session.status === "FAILED") && (
+                                  <button
+                                    onClick={() => manageSession(session.name!, "start")}
+                                    disabled={managingSession === `${session.name}-start`}
+                                    className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 rounded border border-emerald-500/30 transition-colors disabled:opacity-40"
+                                  >
+                                    {managingSession === `${session.name}-start` ? "..." : "Start"}
+                                  </button>
+                                )}
+                                {/* Stop button - when working/active */}
+                                {(session.status === "WORKING" || session.status === "SCAN_QR_CODE") && (
+                                  <button
+                                    onClick={() => manageSession(session.name!, "stop")}
+                                    disabled={managingSession === `${session.name}-stop`}
+                                    className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded border border-amber-500/30 transition-colors disabled:opacity-40"
+                                  >
+                                    {managingSession === `${session.name}-stop` ? "..." : "Stop"}
+                                  </button>
+                                )}
+                                {/* Sync to DB - when session has a connected account */}
+                                {session.me?.id && (
+                                  <button
+                                    onClick={() => syncSessionToDb(session)}
+                                    disabled={syncingSession === session.name}
+                                    className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 rounded border border-purple-500/30 transition-colors disabled:opacity-40"
+                                  >
+                                    {syncingSession === session.name ? "..." : "Sync DB"}
+                                  </button>
+                                )}
+                                {/* Delete button */}
+                                <button
+                                  onClick={() => { if (confirm(`Delete session "${session.name}"? This will log out the WhatsApp account.`)) manageSession(session.name!, "force_delete"); }}
+                                  disabled={managingSession === `${session.name}-force_delete`}
+                                  className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded border border-red-500/30 transition-colors disabled:opacity-40"
+                                >
+                                  {managingSession === `${session.name}-force_delete` ? "..." : "Delete"}
+                                </button>
+                              </div>
+                            </td>
                           </tr>
                         ))
                       )}
@@ -848,74 +978,155 @@ export default function DashboardPage() {
               </div>
 
               <section className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_350px]">
-                <form onSubmit={runCampaign} className="glass-card p-6 flex flex-col gap-5">
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between border-b border-white/10 pb-4">
-                    <div>
-                      <h2 className="text-lg font-semibold text-foreground">Campaign Queue Manager</h2>
-                      <p className="mt-1 text-sm text-foreground/50">
-                        Add targets to the database queue. The Campaign Auto-Pilot will process them in the background.
-                      </p>
+                <div className="flex flex-col gap-6">
+                  <form onSubmit={runCampaign} className="glass-card p-6 flex flex-col gap-5">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between border-b border-white/10 pb-4">
+                      <div>
+                        <h2 className="text-lg font-semibold text-foreground">Campaign Queue Manager</h2>
+                        <p className="mt-1 text-sm text-foreground/50">
+                          Add targets to the database queue. The Campaign Auto-Pilot will process them in the background.
+                        </p>
+                      </div>
+                      <Badge value={`${targetCount} Targets`} />
                     </div>
-                    <Badge value={`${targetCount} Targets`} />
-                  </div>
 
-                  <div>
-                    <label className="field-label" htmlFor="targets">Target Phones (One per line)</label>
-                    <textarea
-                      id="targets"
-                      className="input-field min-h-[140px] resize-y font-mono text-sm leading-relaxed"
-                      value={targets}
-                      onChange={(event) => setTargets(event.target.value)}
-                      placeholder={"201000000001\n201000000002"}
-                    />
-                  </div>
-                  
-                  <div>
-                    <label className="field-label" htmlFor="message">Message Body (Spintax Supported)</label>
-                    <textarea
-                      id="message"
-                      className="input-field min-h-[140px] resize-y leading-relaxed"
-                      value={messageBody}
-                      onChange={(event) => setMessageBody(event.target.value)}
-                      placeholder="Hello {Ali|Ahmed}, this is a reminder to pay your {fees|dues}."
-                    />
-                  </div>
+                    <div>
+                      <label className="field-label" htmlFor="campaignNameInput">Campaign Label / Name (Optional)</label>
+                      <input
+                        id="campaignNameInput"
+                        type="text"
+                        className="input-field"
+                        value={campaignName}
+                        onChange={(e) => setCampaignName(e.target.value)}
+                        placeholder="e.g. Biology Batch A Reminder"
+                      />
+                    </div>
 
-                  <button className="btn-primary mt-2 text-lg py-3" type="submit" disabled={runningCampaign}>
-                    {runningCampaign ? "Adding to Queue..." : "Add to Queue"}
-                  </button>
-                </form>
+                    <div>
+                      <label className="field-label" htmlFor="targets">Target Phones (One per line)</label>
+                      <textarea
+                        id="targets"
+                        className="input-field min-h-[140px] resize-y font-mono text-sm leading-relaxed"
+                        value={targets}
+                        onChange={(event) => setTargets(event.target.value)}
+                        placeholder={"201000000001\n201000000002"}
+                      />
+                    </div>
+                    
+                    <div>
+                      <label className="field-label" htmlFor="message">Message Body (Spintax Supported)</label>
+                      <textarea
+                        id="message"
+                        className="input-field min-h-[140px] resize-y leading-relaxed"
+                        value={messageBody}
+                        onChange={(event) => setMessageBody(event.target.value)}
+                        placeholder="Hello {Ali|Ahmed}, this is a reminder to pay your {fees|dues}."
+                      />
+                    </div>
+
+                    <button className="btn-primary mt-2 text-lg py-3" type="submit" disabled={runningCampaign}>
+                      {runningCampaign ? "Adding to Queue..." : "Add to Queue"}
+                    </button>
+                  </form>
+
+                  {/* Campaigns Overview List */}
+                  <section className="glass-card overflow-hidden">
+                    <div className="border-b border-white/10 p-5 bg-slate-900/40">
+                      <h2 className="text-lg font-semibold text-foreground">Active Campaigns Overview</h2>
+                      <p className="mt-1 text-xs text-foreground/50">List of all batches currently in the queue registry.</p>
+                    </div>
+                    <div className="table-scroll">
+                      <table className="data-table text-xs">
+                        <thead>
+                          <tr>
+                            <th>Campaign Name</th>
+                            <th>Pending</th>
+                            <th>Sent</th>
+                            <th>Failed</th>
+                            <th>Total</th>
+                            <th>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {!queueStatus?.campaigns || queueStatus.campaigns.length === 0 ? (
+                            <tr>
+                              <td colSpan={6} className="text-center text-foreground/40">No campaigns found in queue.</td>
+                            </tr>
+                          ) : (
+                            queueStatus.campaigns.map((c) => (
+                              <tr key={c.name} className="hover:bg-white/5 transition-colors">
+                                <td className="font-semibold text-foreground max-w-[160px] truncate" title={c.name}>{c.name}</td>
+                                <td className="font-mono text-emerald-400 font-bold">{c.PENDING}</td>
+                                <td className="font-mono text-blue-400">{c.DONE}</td>
+                                <td className="font-mono text-red-400">{c.FAILED}</td>
+                                <td className="font-mono font-bold">{c.TOTAL}</td>
+                                <td>
+                                  <button
+                                    onClick={() => setSelectedCampaignName(c.name)}
+                                    className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-white/5 hover:bg-white/10 rounded border border-white/10 transition-colors"
+                                  >
+                                    View
+                                  </button>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
 
                 <div className="flex flex-col gap-6">
                   {/* Queue Status Card */}
                   <div className="glass-card p-6 border-emerald-500/20 bg-gradient-to-b from-emerald-900/10 to-transparent">
-                    <h2 className="text-lg font-bold text-foreground mb-4 flex items-center gap-2">
-                      Queue Metrics
-                      {campaignWorkerRunning && <span className="flex h-2 w-2 relative ml-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span>}
-                    </h2>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="p-3 bg-white/5 rounded-lg border border-white/10">
-                        <div className="text-xs text-emerald-400 font-semibold mb-1 uppercase tracking-wider">Pending</div>
-                        <div className="text-2xl font-mono text-white">{queueStatus?.PENDING ?? 0}</div>
-                      </div>
-                      <div className="p-3 bg-white/5 rounded-lg border border-white/10">
-                        <div className="text-xs text-blue-400 font-semibold mb-1 uppercase tracking-wider">Sent</div>
-                        <div className="text-2xl font-mono text-white">{queueStatus?.DONE ?? 0}</div>
-                      </div>
-                      <div className="p-3 bg-white/5 rounded-lg border border-white/10">
-                        <div className="text-xs text-red-400 font-semibold mb-1 uppercase tracking-wider">Failed</div>
-                        <div className="text-2xl font-mono text-white">{queueStatus?.FAILED ?? 0}</div>
-                      </div>
-                      <div className="p-3 bg-white/5 rounded-lg border border-white/10">
-                        <div className="text-xs text-purple-400 font-semibold mb-1 uppercase tracking-wider">Total</div>
-                        <div className="text-2xl font-mono text-white">{queueStatus?.TOTAL ?? 0}</div>
-                      </div>
+                    <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+                      <h2 className="text-lg font-bold text-foreground flex items-center gap-2">
+                        Queue Metrics
+                        {campaignWorkerRunning && <span className="flex h-2 w-2 relative ml-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span>}
+                      </h2>
+                      <select
+                        value={selectedCampaignName}
+                        onChange={(e) => setSelectedCampaignName(e.target.value)}
+                        className="bg-slate-900 border border-white/10 text-xs text-foreground/80 rounded px-2.5 py-1.5 outline-none max-w-[180px] truncate cursor-pointer hover:border-accent transition-colors"
+                      >
+                        <option value="all">Global (All)</option>
+                        {queueStatus?.campaigns?.map((c) => (
+                          <option key={c.name} value={c.name}>{c.name}</option>
+                        ))}
+                      </select>
                     </div>
+                    
+                    {(() => {
+                      const activeMetrics = selectedCampaignName === "all"
+                        ? queueStatus?.global
+                        : queueStatus?.campaigns?.find((c) => c.name === selectedCampaignName) ?? { PENDING: 0, DONE: 0, FAILED: 0, TOTAL: 0 };
+
+                      return (
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="p-3 bg-white/5 rounded-lg border border-white/10">
+                            <div className="text-xs text-emerald-400 font-semibold mb-1 uppercase tracking-wider">Pending</div>
+                            <div className="text-2xl font-mono text-white">{activeMetrics?.PENDING ?? 0}</div>
+                          </div>
+                          <div className="p-3 bg-white/5 rounded-lg border border-white/10">
+                            <div className="text-xs text-blue-400 font-semibold mb-1 uppercase tracking-wider">Sent</div>
+                            <div className="text-2xl font-mono text-white">{activeMetrics?.DONE ?? 0}</div>
+                          </div>
+                          <div className="p-3 bg-white/5 rounded-lg border border-white/10">
+                            <div className="text-xs text-red-400 font-semibold mb-1 uppercase tracking-wider">Failed</div>
+                            <div className="text-2xl font-mono text-white">{activeMetrics?.FAILED ?? 0}</div>
+                          </div>
+                          <div className="p-3 bg-white/5 rounded-lg border border-white/10">
+                            <div className="text-xs text-purple-400 font-semibold mb-1 uppercase tracking-wider">Total</div>
+                            <div className="text-2xl font-mono text-white">{activeMetrics?.TOTAL ?? 0}</div>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     <button
                       onClick={resetPendingQueue}
-                      disabled={resettingQueue || (queueStatus?.PENDING ?? 0) === 0}
+                      disabled={resettingQueue || ((selectedCampaignName === "all" ? queueStatus?.global?.PENDING : queueStatus?.campaigns?.find(c => c.name === selectedCampaignName)?.PENDING) ?? 0) === 0}
                       className="w-full mt-4 py-2.5 px-4 text-xs font-bold bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 rounded-lg transition-all duration-200 disabled:opacity-30 disabled:hover:bg-red-500/20 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer"
                     >
                       {resettingQueue ? (
@@ -923,8 +1134,10 @@ export default function DashboardPage() {
                           <span className="h-3 w-3 animate-spin rounded-full border-2 border-red-300 border-t-transparent" />
                           Resetting...
                         </>
+                      ) : selectedCampaignName === "all" ? (
+                        "Reset All Pending"
                       ) : (
-                        "Reset Pending Queue"
+                        `Reset Pending for "${shortText(selectedCampaignName, 18)}"`
                       )}
                     </button>
                   </div>
@@ -1012,6 +1225,53 @@ export default function DashboardPage() {
 
         </div>
       </div>
+
+      {/* QR Code Modal */}
+      {activeQrSession && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setActiveQrSession(null)}>
+          <div className="glass-card p-6 max-w-md w-full mx-4 relative" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-bold text-foreground">Scan QR Code</h3>
+                <p className="text-xs text-foreground/50 font-mono mt-1">{activeQrSession}</p>
+              </div>
+              <button
+                onClick={() => setActiveQrSession(null)}
+                className="text-foreground/50 hover:text-foreground text-2xl leading-none transition-colors"
+              >
+                ×
+              </button>
+            </div>
+            <div className="bg-white rounded-lg p-4 flex items-center justify-center min-h-[280px]">
+              <img
+                key={qrKey}
+                src={`/api/waha/qr/${encodeURIComponent(activeQrSession)}?t=${qrKey}`}
+                alt="WhatsApp QR Code"
+                className="max-w-full max-h-[260px] object-contain"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = 'none';
+                  (e.target as HTMLImageElement).parentElement!.innerHTML = '<p style="color:#666;font-size:14px;text-align:center;">QR not available yet.<br/>Start the session first, then click Scan QR.</p>';
+                }}
+              />
+            </div>
+            <p className="text-xs text-foreground/40 text-center mt-3 animate-pulse">Auto-refreshing every 5 seconds...</p>
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={() => setQrKey((k) => k + 1)}
+                className="btn-secondary flex-1 text-sm py-2"
+              >
+                Refresh Now
+              </button>
+              <button
+                onClick={() => { setActiveQrSession(null); void refresh(); }}
+                className="btn-primary flex-1 text-sm py-2"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ToastContainer
         toasts={toasts}

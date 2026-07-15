@@ -6,13 +6,15 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const counts = await prisma.campaignQueue.groupBy({
-      by: ["status"],
+      by: ["campaignName", "status"],
       _count: {
         _all: true,
       },
     });
 
-    const metrics = {
+    const campaignsMap: Record<string, { PENDING: number, PROCESSING: number, DONE: number, FAILED: number, TOTAL: number }> = {};
+    
+    const globalMetrics = {
       PENDING: 0,
       PROCESSING: 0,
       DONE: 0,
@@ -21,14 +23,42 @@ export async function GET() {
     };
 
     for (const row of counts) {
-      const status = row.status as keyof typeof metrics;
-      if (metrics[status] !== undefined) {
-        metrics[status] = row._count._all;
-        metrics.TOTAL += row._count._all;
+      const { campaignName, status } = row;
+      const count = row._count._all;
+
+      if (!campaignsMap[campaignName]) {
+        campaignsMap[campaignName] = {
+          PENDING: 0,
+          PROCESSING: 0,
+          DONE: 0,
+          FAILED: 0,
+          TOTAL: 0,
+        };
+      }
+
+      const campaignMetrics = campaignsMap[campaignName];
+      const statKey = status as keyof typeof globalMetrics;
+
+      if (campaignMetrics[statKey] !== undefined) {
+        campaignMetrics[statKey] = count;
+        campaignMetrics.TOTAL += count;
+      }
+
+      if (globalMetrics[statKey] !== undefined) {
+        globalMetrics[statKey] += count;
+        globalMetrics.TOTAL += count;
       }
     }
 
-    return NextResponse.json(metrics);
+    const campaignsList = Object.entries(campaignsMap).map(([name, metrics]) => ({
+      name,
+      ...metrics,
+    }));
+
+    return NextResponse.json({
+      global: globalMetrics,
+      campaigns: campaignsList,
+    });
   } catch (error) {
     return NextResponse.json({ error: "Failed to fetch queue status." }, { status: 500 });
   }

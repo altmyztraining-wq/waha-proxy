@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { manageWahaSession, WahaError } from "@/app/lib/waha";
+import { manageWahaSession, deleteWahaSession, WahaError } from "@/app/lib/waha";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
       }
       // Wait a moment for it to stop
       await new Promise(res => setTimeout(res, 1500));
-      await manageWahaSession(sessionName, "logout");
+      await deleteWahaSession(sessionName);
     } else {
       await manageWahaSession(sessionName, action as any);
     }

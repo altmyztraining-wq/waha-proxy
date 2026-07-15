@@ -132,7 +132,7 @@ export async function POST(request: Request) {
         await setWahaPresence({
           sessionName: sender.sessionName,
           phoneNumber: targetPhone,
-          presence: "composing",
+          presence: "typing",
         });
 
         // Sleep based on message length to simulate typing (max 4 seconds)

@@ -408,6 +408,27 @@ export async function manageWahaSession(sessionName: string, action: "stop" | "s
 }
 
 /**
+ * Deletes/Removes a WAHA session completely from the engine
+ */
+export async function deleteWahaSession(sessionName: string) {
+  const url = `${process.env.WAHA_API_URL}/api/sessions/${sessionName}`;
+
+  const response = await fetch(url, {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Api-Key": process.env.WAHA_API_KEY ?? "",
+    },
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new WahaError(`Failed to delete session ${sessionName}: ${response.statusText}`, response.status, errorText);
+  }
+}
+
+
+/**
  * Calculates a highly realistic, randomized typing duration based on message length.
  */
 export function calculateTypingTime(text: string): number {

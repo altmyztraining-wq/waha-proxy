@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { targetPhones, messageBody } = body;
+    const { targetPhones, messageBody, campaignName } = body;
 
     if (!targetPhones || !messageBody) {
       return NextResponse.json(
@@ -15,13 +15,16 @@ export async function POST(request: Request) {
       );
     }
 
-    const phones = Array.from(new Set(targetPhones.split(/[\n,; ]+/).map((p: string) => p.trim()).filter(Boolean)));
+    const phones: string[] = Array.from(new Set(targetPhones.split(/[\n,; ]+/).map((p: string) => p.trim()).filter(Boolean)));
 
     if (phones.length === 0) {
       return NextResponse.json({ error: "No valid phones provided." }, { status: 400 });
     }
 
-    const creates = phones.map((phone: string) => ({
+    const finalCampaignName = campaignName?.trim() || `Campaign - ${new Date().toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }).replace(",", "")}`;
+
+    const creates = phones.map((phone) => ({
+      campaignName: finalCampaignName,
       targetPhone: phone,
       messageBody,
       status: "PENDING",
@@ -41,11 +44,15 @@ export async function POST(request: Request) {
   }
 }
 
-export async function DELETE() {
+export async function DELETE(request: Request) {
   try {
+    const url = new URL(request.url);
+    const campaignName = url.searchParams.get("campaignName");
+
     const result = await prisma.campaignQueue.deleteMany({
       where: {
         status: "PENDING",
+        ...(campaignName ? { campaignName } : {}),
       },
     });
 
