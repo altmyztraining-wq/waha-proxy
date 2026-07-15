@@ -23,6 +23,8 @@
 # misc
 .DS_Store
 *.pem
+prisma/dev.db
+prisma/dev.db-journal
 
 # debug
 npm-debug.log*
