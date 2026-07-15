@@ -1,0 +1,21 @@
+services:
+  waha:
+    image: devlikeapro/waha:chrome
+    container_name: waha
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      WAHA_API_KEY: mywahakey
+      WAHA_DASHBOARD_ENABLED: "true"
+      WAHA_DASHBOARD_USERNAME: admin
+      WAHA_DASHBOARD_PASSWORD: admin123
+      WHATSAPP_DEFAULT_ENGINE: WEBJS
+      WAHA_PRINT_QR: "false"
+      TZ: Africa/Cairo
+      WAHA_RUN_XVFB: "false"
+      WAHA_WEBJS_PUPPETEER_ARGS: --no-sandbox --disable-setuid-sandbox
+      WHATSAPP_WEBHOOK_URL: "http://host.docker.internal:3001/api/webhook"
+      WHATSAPP_WEBHOOK_EVENTS: "message,message.any,session.status"
+    volumes:
+      - ./.waha/.sessions:/app/.sessions

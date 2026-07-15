@@ -41,3 +41,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# waha local sessions and logs
+.waha/
+waha_logs.txt
+*.log
+

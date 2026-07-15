@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model WahaSender {
+  phoneNumber    String       @id
+  sessionName    String
+  status         String
+  dailySentCount Int          @default(0)
+  maxDailyLimit  Int
+  warmupDay      Int          @default(1)
+  proxyIp        String
+  lastActiveAt   DateTime     @default(now())
+  createdAt      DateTime     @default(now())
+  messageLogs    MessageLog[]
+
+  @@index([status])
+  @@index([sessionName])
+}
+
+model MessageLog {
+  logId       Int        @id @default(autoincrement())
+  senderPhone String
+  targetPhone String
+  messageBody String
+  status      String
+  errorReason String?
+  createdAt   DateTime   @default(now())
+  sender      WahaSender @relation(fields: [senderPhone], references: [phoneNumber])
+
+  @@index([senderPhone])
+  @@index([targetPhone])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model CampaignQueue {
+  id          Int      @id @default(autoincrement())
+  targetPhone String
+  messageBody String
+  status      String   @default("PENDING") // PENDING, DONE, FAILED
+  errorReason String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}

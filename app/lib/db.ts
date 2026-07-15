@@ -1,0 +1,365 @@
+import { PrismaClient, type MessageLog, type WahaSender } from "@prisma/client";
+
+const globalForPrisma = globalThis as unknown as {
+  prisma?: PrismaClient;
+};
+
+export const prisma =
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    log:
+      process.env.NODE_ENV === "development"
+        ? ["error", "warn"]
+        : ["error"],
+  });
+
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prisma;
+}
+
+export type SenderStatus = "ACTIVE" | "BANNED" | "RESTING";
+export type MessageDeliveryStatus = "SENT" | "FAILED" | "PENDING";
+
+export type UpsertSenderInput = {
+  phoneNumber: string;
+  sessionName: string;
+  status: SenderStatus;
+  maxDailyLimit: number;
+  proxyIp: string;
+};
+
+const META_BAN_ERROR_PATTERNS = [
+  "banned",
+  "ban",
+  "blocked by whatsapp",
+  "account disabled",
+  "account banned",
+  "temporarily unavailable",
+  "not allowed",
+  "logged out",
+  "unpaired",
+  "403",
+  "401",
+];
+
+const SESSION_CLOSED_ERROR_PATTERNS = [
+  "session status is not as expected",
+  '"status":"failed"',
+  "session not found",
+  "unprocessable entity"
+];
+
+function looksLikeMetaBan(errorReason?: string | null) {
+  if (!errorReason) {
+    return false;
+  }
+
+  const normalized = errorReason.toLowerCase();
+  return META_BAN_ERROR_PATTERNS.some((pattern) =>
+    normalized.includes(pattern)
+  );
+}
+
+function looksLikeSessionClosed(errorReason?: string | null) {
+  if (!errorReason) {
+    return false;
+  }
+
+  const normalized = errorReason.toLowerCase();
+  return SESSION_CLOSED_ERROR_PATTERNS.some((pattern) =>
+    normalized.includes(pattern)
+  );
+}
+
+export async function resetDailySentCountsIfNewDay() {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  await prisma.wahaSender.updateMany({
+    where: {
+      lastActiveAt: {
+        lt: todayStart,
+      },
+      dailySentCount: {
+        gt: 0,
+      },
+    },
+    data: {
+      dailySentCount: 0,
+    },
+  });
+}
+
+export async function getAvailableSender(
+  excludePhones: string[] = []
+): Promise<WahaSender | null> {
+  await resetDailySentCountsIfNewDay();
+  const activeSenders = await prisma.wahaSender.findMany({
+    where: {
+      status: "ACTIVE",
+      ...(excludePhones.length > 0
+        ? { phoneNumber: { notIn: excludePhones } }
+        : {}),
+    },
+    orderBy: [
+      {
+        dailySentCount: "asc",
+      },
+      {
+        lastActiveAt: "desc",
+      },
+    ],
+  });
+
+  return (
+    activeSenders.find(
+      (sender) => sender.dailySentCount < sender.maxDailyLimit
+    ) ?? null
+  );
+}
+
+/**
+ * Global In-Memory Mutex for Senders.
+ * Ensures that a single WhatsApp number is never used simultaneously
+ * by the Campaign Queue and the Cross-Talk Engine.
+ */
+const busySenders = new Set<string>();
+
+export function lockSender(phone: string) {
+  busySenders.add(phone);
+}
+
+export function unlockSender(phone: string) {
+  busySenders.delete(phone);
+}
+
+export function isSenderBusy(phone: string) {
+  return busySenders.has(phone);
+}
+
+/**
+ * Round-robin sender selection for campaigns.
+ * Cycles through available ACTIVE senders that are under their daily limit,
+ * distributing messages evenly across phones/proxies.
+ */
+let _rrIndex = Math.floor(Math.random() * 1000);
+
+export async function getNextRoundRobinSender(lastUsedProxyIp?: string): Promise<WahaSender | null> {
+  await resetDailySentCountsIfNewDay();
+  const activeSenders = await prisma.wahaSender.findMany({
+    where: {
+      status: "ACTIVE",
+    },
+    orderBy: {
+      phoneNumber: "asc",
+    },
+  });
+
+  let available = activeSenders.filter(
+    (s) => s.dailySentCount < s.maxDailyLimit && !isSenderBusy(s.phoneNumber)
+  );
+
+  if (lastUsedProxyIp) {
+    // Strictly filter out any sender that shares the same proxy IP
+    available = available.filter((s) => s.proxyIp !== lastUsedProxyIp);
+  }
+
+  if (available.length === 0) return null;
+
+  const sender = available[_rrIndex % available.length];
+  _rrIndex++;
+  return sender;
+}
+
+export function resetRoundRobin() {
+  _rrIndex = 0;
+}
+
+export async function listSenders(): Promise<WahaSender[]> {
+  await resetDailySentCountsIfNewDay();
+  return prisma.wahaSender.findMany({
+    orderBy: [
+      {
+        status: "asc",
+      },
+      {
+        lastActiveAt: "desc",
+      },
+    ],
+  });
+}
+
+export async function upsertSender({
+  phoneNumber,
+  sessionName,
+  status,
+  maxDailyLimit,
+  proxyIp,
+}: UpsertSenderInput): Promise<WahaSender> {
+  return prisma.wahaSender.upsert({
+    where: {
+      phoneNumber,
+    },
+    create: {
+      phoneNumber,
+      sessionName,
+      status,
+      dailySentCount: 0,
+      maxDailyLimit,
+      proxyIp,
+      lastActiveAt: new Date(),
+    },
+    update: {
+      sessionName,
+      status,
+      maxDailyLimit,
+      proxyIp,
+      lastActiveAt: new Date(),
+    },
+  });
+}
+
+export async function getRecentMessageLogs(limit = 50): Promise<MessageLog[]> {
+  return prisma.messageLog.findMany({
+    take: limit,
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+}
+
+export async function getMessageStats() {
+  const rows = await prisma.messageLog.groupBy({
+    by: ["status"],
+    _count: {
+      _all: true,
+    },
+  });
+
+  return rows.reduce<Record<string, number>>((acc, row) => {
+    acc[row.status] = row._count._all;
+    return acc;
+  }, {});
+}
+
+export async function getSenderStats() {
+  const rows = await prisma.wahaSender.groupBy({
+    by: ["status"],
+    _count: {
+      _all: true,
+    },
+  });
+
+  return rows.reduce<Record<string, number>>((acc, row) => {
+    acc[row.status] = row._count._all;
+    return acc;
+  }, {});
+}
+
+export async function logMessageResult(
+  senderPhone: string,
+  targetPhone: string,
+  body: string,
+  status: MessageDeliveryStatus,
+  errorReason?: string | null
+): Promise<MessageLog> {
+  return prisma.$transaction(async (tx) => {
+    const messageLog = await tx.messageLog.create({
+      data: {
+        senderPhone,
+        targetPhone,
+        messageBody: body,
+        status,
+        errorReason: errorReason ?? null,
+      },
+    });
+
+    if (status === "SENT") {
+      await tx.wahaSender.update({
+        where: {
+          phoneNumber: senderPhone,
+        },
+        data: {
+          dailySentCount: {
+            increment: 1,
+          },
+          lastActiveAt: new Date(),
+        },
+      });
+    }
+
+    if (status === "FAILED") {
+      if (looksLikeMetaBan(errorReason)) {
+        await tx.wahaSender.update({
+          where: {
+            phoneNumber: senderPhone,
+          },
+          data: {
+            status: "BANNED",
+            lastActiveAt: new Date(),
+          },
+        });
+      } else if (looksLikeSessionClosed(errorReason)) {
+        await tx.wahaSender.update({
+          where: {
+            phoneNumber: senderPhone,
+          },
+          data: {
+            status: "RESTING",
+            lastActiveAt: new Date(),
+          },
+        });
+      }
+    }
+
+    return messageLog;
+  });
+}
+
+export async function getSenderAnalytics(senderPhone: string) {
+  const rows = await prisma.messageLog.groupBy({
+    by: ["status"],
+    where: {
+      senderPhone,
+    },
+    _count: {
+      _all: true,
+    },
+  });
+
+  let totalSent = 0;
+  let totalFailed = 0;
+
+  for (const row of rows) {
+    if (row.status === "SENT") totalSent = row._count._all;
+    if (row.status === "FAILED") totalFailed = row._count._all;
+  }
+
+  const total = totalSent + totalFailed;
+  const successRate = total > 0 ? Math.round((totalSent / total) * 100) : 0;
+
+  return {
+    totalSent,
+    totalFailed,
+    successRate,
+  };
+}
+
+export async function getChatHistory(phone1: string, phone2: string, limit: number = 6) {
+  const messages = await prisma.messageLog.findMany({
+    where: {
+      OR: [
+        { senderPhone: phone1, targetPhone: phone2 },
+        { senderPhone: phone2, targetPhone: phone1 },
+      ],
+      status: "SENT"
+    },
+    orderBy: {
+      createdAt: "desc"
+    },
+    take: limit
+  });
+
+  // Reverse to get chronological order
+  return messages.reverse().map(m => `[${m.senderPhone}]: ${m.messageBody}`).join("\n");
+}
