@@ -5,7 +5,7 @@ import {
   getSenderStats,
   listSenders,
   getSenderAnalytics,
-  upsertSender,
+  syncSendersWithWahaSessions,
 } from "@/app/lib/db";
 import { getWahaVersion, listWahaSessions, WahaError } from "@/app/lib/waha";
 
@@ -19,42 +19,23 @@ function getConfiguredProxyUrl() {
 export async function GET() {
   try {
     const [
-      senders,
       messageLogs,
       messageStats,
-      senderStats,
       wahaVersion,
       wahaSessions,
     ] = await Promise.all([
-      listSenders(),
       getRecentMessageLogs(50),
       getMessageStats(),
-      getSenderStats(),
       getWahaVersion(),
       listWahaSessions(),
     ]);
 
-    // Auto-Sync WORKING sessions directly into our DB
+    // Sync first so this very response never contains stale ACTIVE senders.
     if (Array.isArray(wahaSessions)) {
-      for (const session of wahaSessions) {
-        if (session.status === "WORKING" && session.me?.id && session.name) {
-          const phone = session.me.id.split("@")[0];
-          const proxyIp = session.config?.proxy?.server ?? "";
-          
-          // Only register if it looks like a valid phone
-          if (/^\d{8,15}$/.test(phone)) {
-            // Upsert in background without awaiting all of them to block the monitor request
-            void upsertSender({
-              phoneNumber: phone,
-              sessionName: session.name,
-              status: "ACTIVE",
-              maxDailyLimit: 50,
-              proxyIp,
-            }).catch(() => { /* ignore sync errors on monitor */ });
-          }
-        }
-      }
+      await syncSendersWithWahaSessions(wahaSessions);
     }
+
+    const [senders, senderStats] = await Promise.all([listSenders(), getSenderStats()]);
 
     // Attach analytics to each sender
     const sendersWithAnalytics = await Promise.all(

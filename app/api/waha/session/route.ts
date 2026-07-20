@@ -48,6 +48,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: true,
       sessionName,
+      proxyExitIp: data.proxyExitIp,
       data,
     });
   } catch (error: unknown) {

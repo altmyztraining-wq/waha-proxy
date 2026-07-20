@@ -5,7 +5,7 @@ import {
   logMessageResult,
   type MessageDeliveryStatus,
 } from "@/app/lib/db";
-import { sendWahaText, WahaError, checkProxyHealth, setWahaPresence } from "@/app/lib/waha";
+import { sendWahaText, WahaError, checkProxyHealth, setWahaPresence, listWahaSessions } from "@/app/lib/waha";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -102,10 +102,15 @@ export async function POST(request: Request) {
     const results: CampaignResult[] = [];
     resetRoundRobin();
 
+    const sessions = await listWahaSessions();
+    const workingSessionNames = sessions
+      .filter((session) => session.status === "WORKING" && session.name)
+      .map((session) => session.name as string);
+
     let lastProxyIp: string | undefined = undefined;
 
     for (const [index, targetPhone] of targets.entries()) {
-      const sender = await getNextRoundRobinSender(lastProxyIp);
+      const sender = await getNextRoundRobinSender(lastProxyIp, workingSessionNames);
 
       if (!sender) {
         results.push({

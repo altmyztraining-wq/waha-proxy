@@ -14,7 +14,7 @@ services:
       WAHA_PRINT_QR: "false"
       TZ: Africa/Cairo
       WAHA_RUN_XVFB: "false"
-      WAHA_WEBJS_PUPPETEER_ARGS: --no-sandbox --disable-setuid-sandbox
+      WAHA_WEBJS_PUPPETEER_ARGS: --no-sandbox --disable-setuid-sandbox --disable-blink-features=AutomationControlled --disable-infobars --window-position=0,0 --ignore-certifcate-errors --ignore-certifcate-errors-spki-list --disable-default-apps --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
       WHATSAPP_WEBHOOK_URL: "http://host.docker.internal:3001/api/webhook"
       WHATSAPP_WEBHOOK_EVENTS: "message,message.any,session.status"
     volumes:

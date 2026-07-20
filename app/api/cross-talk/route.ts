@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { listSenders, getNextRoundRobinSender, logMessageResult, getChatHistory, lockSender, unlockSender, isSenderBusy } from "@/app/lib/db";
-import { sendWahaText, setWahaPresence, setWahaSeen, checkProxyHealth, calculateTypingTime } from "@/app/lib/waha";
+import { listSenders, logMessageResult, getChatHistory, lockSender, unlockSender, isSenderBusy } from "@/app/lib/db";
+import { sendWahaText, setWahaPresence, setWahaSeen, checkProxyHealth, calculateTypingTime, listWahaSessions } from "@/app/lib/waha";
 import { generateCrossTalkMessage, RateLimitError } from "@/app/lib/gemini";
 
 export const runtime = "nodejs";
@@ -13,7 +13,18 @@ function sleep(ms: number) {
 export async function POST() {
   try {
     const senders = await listSenders();
-    const activeSenders = senders.filter((s) => s.status === "ACTIVE" && !isSenderBusy(s.phoneNumber));
+    const sessions = await listWahaSessions();
+    const workingSessionNames = new Set(
+      sessions
+        .filter((session) => session.status === "WORKING" && session.name)
+        .map((session) => session.name as string)
+    );
+    const activeSenders = senders.filter(
+      (sender) =>
+        sender.status === "ACTIVE" &&
+        workingSessionNames.has(sender.sessionName) &&
+        !isSenderBusy(sender.phoneNumber)
+    );
 
     if (activeSenders.length < 2) {
       return NextResponse.json(
@@ -25,7 +36,7 @@ export async function POST() {
     // Pick two random active senders
     const sender1 = activeSenders[Math.floor(Math.random() * activeSenders.length)];
     // Ensure they have different IP addresses (prevent same-phone chat)
-    let availableForS2 = activeSenders.filter((s) => s.proxyIp !== sender1.proxyIp);
+    const availableForS2 = activeSenders.filter((s) => s.proxyIp !== sender1.proxyIp);
     
     if (availableForS2.length === 0) {
       return NextResponse.json(

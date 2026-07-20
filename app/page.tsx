@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 
-type SenderStatus = "ACTIVE" | "BANNED" | "RESTING";
+type SenderStatus = "ACTIVE" | "BANNED" | "RESTING" | "OFFLINE";
 type MessageStatus = "SENT" | "FAILED" | "PENDING";
 
 type WahaSession = {
@@ -87,11 +87,21 @@ type Toast = {
   message: string;
 };
 
+type CampaignJob = {
+  id: number;
+  targetPhone: string;
+  messageBody: string;
+  status: string;
+  errorReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 const DEFAULT_SESSION = "";
 
 function Badge({ value }: { value: string }) {
   const tone =
-    value === "ACTIVE" || value === "SENT" || value === "WORKING"
+    value === "ACTIVE" || value === "SENT" || value === "DONE" || value === "WORKING"
       ? "border-emerald-400/35 bg-emerald-400/10 text-emerald-200"
       : value === "BANNED" || value === "FAILED"
         ? "border-red-400/35 bg-red-400/10 text-red-200"
@@ -205,6 +215,10 @@ export default function DashboardPage() {
   const [campaignAutoPilot, setCampaignAutoPilot] = useState(false);
   const [campaignWorkerRunning, setCampaignWorkerRunning] = useState(false);
   const [resettingQueue, setResettingQueue] = useState(false);
+  const [viewedCampaignName, setViewedCampaignName] = useState<string | null>(null);
+  const [campaignJobs, setCampaignJobs] = useState<CampaignJob[]>([]);
+  const [loadingCampaignJobs, setLoadingCampaignJobs] = useState(false);
+  const [retryingFailedJobs, setRetryingFailedJobs] = useState(false);
 
   const [sessionName, setSessionName] = useState(DEFAULT_SESSION);
   const [sessionProxyUrl, setSessionProxyUrl] = useState("");
@@ -234,8 +248,8 @@ export default function DashboardPage() {
     return () => clearInterval(interval);
   }, [activeQrSession]);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (background = false) => {
+    if (!background) setLoading(true);
     try {
       const response = await fetch("/api/monitor", { cache: "no-store" });
       const data = await response.json();
@@ -252,7 +266,7 @@ export default function DashboardPage() {
         error instanceof Error ? error.message : "Unable to load dashboard."
       );
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, [addToast]);
 
@@ -260,8 +274,14 @@ export default function DashboardPage() {
     const timer = window.setTimeout(() => {
       void refresh();
     }, 0);
+    const interval = window.setInterval(() => {
+      void refresh(true);
+    }, 5000);
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearInterval(interval);
+    };
   }, [refresh]);
 
   // AI Cross-Talk Auto-Pilot Logic
@@ -312,6 +332,63 @@ export default function DashboardPage() {
   }, [fetchQueueStatus]);
 
   const workerRef = useRef(false);
+
+  async function viewCampaign(name: string) {
+    setSelectedCampaignName(name);
+    setViewedCampaignName(name);
+    setCampaignJobs([]);
+    setLoadingCampaignJobs(true);
+
+    try {
+      const response = await fetch(`/api/campaign/queue?campaignName=${encodeURIComponent(name)}`, {
+        cache: "no-store",
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Unable to load campaign details.");
+      }
+
+      setCampaignJobs(data.jobs ?? []);
+    } catch (error) {
+      addToast("error", error instanceof Error ? error.message : "Unable to load campaign details.");
+      setViewedCampaignName(null);
+    } finally {
+      setLoadingCampaignJobs(false);
+    }
+  }
+
+  async function retryFailedCampaignJobs() {
+    if (!viewedCampaignName) return;
+
+    const failedCount = campaignJobs.filter((job) => job.status === "FAILED").length;
+    if (failedCount === 0) return;
+
+    if (!window.confirm(`Retry all ${failedCount} failed job${failedCount === 1 ? "" : "s"} in "${viewedCampaignName}"?`)) {
+      return;
+    }
+
+    setRetryingFailedJobs(true);
+    try {
+      const response = await fetch("/api/campaign/queue", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignName: viewedCampaignName }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Unable to retry failed jobs.");
+      }
+
+      addToast("success", `${data.retriedCount} failed job${data.retriedCount === 1 ? "" : "s"} moved back to pending.`);
+      await Promise.all([fetchQueueStatus(), viewCampaign(viewedCampaignName)]);
+    } catch (error) {
+      addToast("error", error instanceof Error ? error.message : "Unable to retry failed jobs.");
+    } finally {
+      setRetryingFailedJobs(false);
+    }
+  }
 
   // Campaign Worker Auto-Pilot
   useEffect(() => {
@@ -386,7 +463,7 @@ export default function DashboardPage() {
         throw new Error(data.error ?? "Unable to start session.");
       }
 
-      addToast("success", "Session started with the configured proxy.");
+      addToast("success", `✅ Session created! WhatsApp sees IP: ${data.proxyExitIp ?? "verified"}`);
       await refresh();
     } catch (error) {
       addToast(
@@ -1062,7 +1139,7 @@ export default function DashboardPage() {
                                 <td className="font-mono font-bold">{c.TOTAL}</td>
                                 <td>
                                   <button
-                                    onClick={() => setSelectedCampaignName(c.name)}
+                                    onClick={() => void viewCampaign(c.name)}
                                     className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-white/5 hover:bg-white/10 rounded border border-white/10 transition-colors"
                                   >
                                     View
@@ -1225,6 +1302,95 @@ export default function DashboardPage() {
 
         </div>
       </div>
+
+      {/* Campaign Details Modal */}
+      {viewedCampaignName && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          onClick={() => setViewedCampaignName(null)}
+        >
+          <section
+            className="glass-card flex max-h-[85vh] w-full max-w-5xl flex-col overflow-hidden"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-white/10 p-5 bg-slate-900/40">
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold text-foreground">Campaign Details</h2>
+                <p className="mt-1 truncate text-sm text-foreground/60" title={viewedCampaignName}>
+                  {viewedCampaignName}
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Close campaign details"
+                onClick={() => setViewedCampaignName(null)}
+                className="text-2xl leading-none text-foreground/50 transition-colors hover:text-foreground"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="table-scroll min-h-0 flex-1 overflow-auto">
+              {loadingCampaignJobs ? (
+                <div className="flex min-h-52 items-center justify-center gap-3 text-sm text-foreground/60">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-emerald-300 border-t-transparent" />
+                  Loading campaign details...
+                </div>
+              ) : campaignJobs.length === 0 ? (
+                <div className="flex min-h-52 items-center justify-center text-sm text-foreground/50">
+                  No jobs found for this campaign.
+                </div>
+              ) : (
+                <table className="data-table w-full text-xs">
+                  <thead className="sticky top-0 z-10 bg-slate-950">
+                    <tr>
+                      <th>Target</th>
+                      <th>Status</th>
+                      <th>Message</th>
+                      <th>Error</th>
+                      <th>Created</th>
+                      <th>Updated</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {campaignJobs.map((job) => (
+                      <tr key={job.id}>
+                        <td className="whitespace-nowrap font-mono">{job.targetPhone}</td>
+                        <td><Badge value={job.status} /></td>
+                        <td className="max-w-64" title={job.messageBody}>{shortText(job.messageBody, 80)}</td>
+                        <td className="max-w-56 text-red-300" title={job.errorReason ?? undefined}>
+                          {job.errorReason ? shortText(job.errorReason, 70) : "-"}
+                        </td>
+                        <td className="whitespace-nowrap text-foreground/70">{formatDate(job.createdAt)}</td>
+                        <td className="whitespace-nowrap text-foreground/70">{formatDate(job.updatedAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 p-4 text-xs text-foreground/50">
+              <span>{campaignJobs.length} job{campaignJobs.length === 1 ? "" : "s"}</span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => void retryFailedCampaignJobs()}
+                  disabled={retryingFailedJobs || campaignJobs.every((job) => job.status !== "FAILED")}
+                  className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-2 font-bold text-amber-200 transition-colors hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  {retryingFailedJobs
+                    ? "Retrying..."
+                    : `Retry All Failed (${campaignJobs.filter((job) => job.status === "FAILED").length})`}
+                </button>
+                <button type="button" onClick={() => setViewedCampaignName(null)} className="btn-secondary px-4 py-2">
+                  Close
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
 
       {/* QR Code Modal */}
       {activeQrSession && (

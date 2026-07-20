@@ -1,4 +1,5 @@
 import net from "node:net";
+import { exec } from "node:child_process";
 
 type WahaProxyConfig = {
   server: string;
@@ -221,6 +222,81 @@ export async function assertWahaWebjsEngine() {
   }
 }
 
+/**
+ * Runs a command inside the WAHA Docker container and returns stdout.
+ */
+function execInDocker(cmd: string, timeoutMs = 15000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    exec(
+      `docker exec waha ${cmd}`,
+      { timeout: timeoutMs },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr?.trim() || error.message));
+        } else {
+          resolve(stdout.trim());
+        }
+      }
+    );
+  });
+}
+
+/**
+ * Verifies that the proxy is working from INSIDE Docker before creating a session.
+ * This is critical — if the proxy is down or slow, WAHA's Chrome will connect
+ * directly without proxy and WhatsApp will see the server's real IP → instant ban.
+ *
+ * Checks:
+ * 1. Proxy can reach the internet (api.ipify.org) from Docker
+ * 2. The IP returned is NOT the server's own IP (confirms proxy is routing traffic)
+ * 3. Proxy can reach web.whatsapp.com (WhatsApp won't block the connection)
+ */
+export async function verifyProxyFromDocker(proxyUrl: string): Promise<{ ip: string }> {
+  const parsed = parseWahaProxyUrl(proxyUrl);
+  const proxyArg = parsed.username && parsed.password
+    ? `http://${parsed.username}:${parsed.password}@${parsed.server}`
+    : `http://${parsed.server}`;
+
+  // Step 1: Check proxy returns an IP
+  let proxyIp: string;
+  try {
+    proxyIp = await execInDocker(
+      `curl -s -x ${proxyArg} http://api.ipify.org --max-time 10`
+    );
+  } catch {
+    throw new WahaError(
+      `❌ البروكسي مش شغال أو مش بيرد من داخل Docker. تأكد إن Every Proxy شغال على الموبايل وإن Tailscale متصل. Proxy: ${parsed.server}`,
+      400
+    );
+  }
+
+  if (!proxyIp || !/^\d+\.\d+\.\d+\.\d+$/.test(proxyIp)) {
+    throw new WahaError(
+      `❌ البروكسي رد برد غير متوقع بدل IP. الرد: "${proxyIp}". تأكد إن البروكسي HTTP proxy وشغال صح.`,
+      400
+    );
+  }
+
+  // Step 2: Verify proxy can reach WhatsApp
+  try {
+    const whatsappResult = await execInDocker(
+      `curl -s -o /dev/null -w "%{http_code}" -I -L -x ${proxyArg} https://web.whatsapp.com/ --max-time 15`
+    );
+    const statusCode = parseInt(whatsappResult, 10);
+    if (statusCode < 200 || statusCode >= 400) {
+      throw new Error(`HTTP ${statusCode}`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    throw new WahaError(
+      `❌ البروكسي شغال بس مش قادر يفتح web.whatsapp.com — واتساب ممكن يكون حاجب الـ IP ده. (${msg}). Proxy IP: ${proxyIp}`,
+      400
+    );
+  }
+
+  return { ip: proxyIp };
+}
+
 export async function createWahaSession({
   sessionName,
   proxyUrl,
@@ -228,6 +304,10 @@ export async function createWahaSession({
 }: CreateWahaSessionOptions) {
   assertSafeSessionName(sessionName);
   await assertWahaWebjsEngine();
+
+  // ⛔ MANDATORY: Verify proxy works from inside Docker BEFORE creating session
+  const proxyCheck = await verifyProxyFromDocker(proxyUrl);
+  console.log(`✅ Proxy verified from Docker. Exit IP: ${proxyCheck.ip}. Creating session "${sessionName}"...`);
 
   const payload = {
     name: sessionName,
@@ -237,10 +317,12 @@ export async function createWahaSession({
     },
   };
 
-  return fetchWaha("/api/sessions", {
+  const wahaResult = await fetchWaha("/api/sessions", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+
+  return { ...wahaResult, proxyExitIp: proxyCheck.ip };
 }
 
 export async function sendWahaText({
@@ -275,7 +357,7 @@ export async function checkProxyHealth(proxyServer: string): Promise<boolean> {
 
   return new Promise((resolve) => {
     const socket = new net.Socket();
-    socket.setTimeout(4000); // 4 seconds timeout
+    socket.setTimeout(8000); // 8 seconds timeout (Tailscale + mobile data can be slow)
 
     socket.on("connect", () => {
       socket.destroy();
@@ -433,20 +515,20 @@ export async function deleteWahaSession(sessionName: string) {
  */
 export function calculateTypingTime(text: string): number {
   const length = text.length || 1;
-  // Humans type between 50ms and 150ms per character on mobile, but it varies wildly per message
-  const msPerChar = Math.floor(Math.random() * (150 - 50 + 1)) + 50;
+  // Humans type between 80ms and 250ms per character on mobile, but it varies wildly per message
+  const msPerChar = Math.floor(Math.random() * (250 - 80 + 1)) + 80;
   
   let typeTimeMs = length * msPerChar;
   
-  // Add a completely random variance (+/- 15%)
-  const variance = typeTimeMs * 0.15;
+  // Add a larger random variance (+/- 25%)
+  const variance = typeTimeMs * 0.25;
   typeTimeMs += (Math.random() * variance * 2) - variance;
   
-  // Base thought/reaction time before starting to type (300ms to 1s)
-  const reactionTime = Math.floor(Math.random() * 700) + 300;
+  // Base thought/reaction time before starting to type (800ms to 2.5s)
+  const reactionTime = Math.floor(Math.random() * 1700) + 800;
   
   typeTimeMs += reactionTime;
 
-  // Cap it between 1s (minimum) and 14s (maximum patience for a single burst of typing)
-  return Math.max(1000, Math.min(Math.floor(typeTimeMs), 14000));
+  // Cap it between 2s (minimum realistic) and 20s (maximum patience for a single burst of typing)
+  return Math.max(2000, Math.min(Math.floor(typeTimeMs), 20000));
 }

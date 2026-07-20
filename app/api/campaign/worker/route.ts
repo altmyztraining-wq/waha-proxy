@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma, getNextRoundRobinSender, logMessageResult, lockSender, unlockSender } from "@/app/lib/db";
-import { sendWahaText, setWahaPresence, setWahaSeen, checkProxyHealth, WahaError, calculateTypingTime } from "@/app/lib/waha";
+import { sendWahaText, setWahaPresence, setWahaSeen, checkProxyHealth, WahaError, calculateTypingTime, listWahaSessions } from "@/app/lib/waha";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +23,11 @@ function errorToReason(error: unknown) {
 
 export async function POST() {
   try {
+    const sessions = await listWahaSessions();
+    const workingSessionNames = sessions
+      .filter((session) => session.status === "WORKING" && session.name)
+      .map((session) => session.name as string);
+
     // 1. Find ONE pending job
     const job = await prisma.campaignQueue.findFirst({
       where: { status: "PENDING" },
@@ -40,7 +45,7 @@ export async function POST() {
     });
 
     // 3. Find available sender
-    const sender = await getNextRoundRobinSender();
+    const sender = await getNextRoundRobinSender(undefined, workingSessionNames);
     if (!sender) {
       // Revert to pending so it can be retried later
       await prisma.campaignQueue.update({

@@ -17,7 +17,7 @@ if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;
 }
 
-export type SenderStatus = "ACTIVE" | "BANNED" | "RESTING";
+export type SenderStatus = "ACTIVE" | "BANNED" | "RESTING" | "OFFLINE";
 export type MessageDeliveryStatus = "SENT" | "FAILED" | "PENDING";
 
 export type UpsertSenderInput = {
@@ -144,11 +144,17 @@ export function isSenderBusy(phone: string) {
  */
 let _rrIndex = Math.floor(Math.random() * 1000);
 
-export async function getNextRoundRobinSender(lastUsedProxyIp?: string): Promise<WahaSender | null> {
+export async function getNextRoundRobinSender(
+  lastUsedProxyIp?: string,
+  allowedSessionNames?: string[]
+): Promise<WahaSender | null> {
+  if (allowedSessionNames && allowedSessionNames.length === 0) return null;
+
   await resetDailySentCountsIfNewDay();
   const activeSenders = await prisma.wahaSender.findMany({
     where: {
       status: "ACTIVE",
+      ...(allowedSessionNames ? { sessionName: { in: allowedSessionNames } } : {}),
     },
     orderBy: {
       phoneNumber: "asc",
@@ -216,6 +222,64 @@ export async function upsertSender({
       proxyIp,
       lastActiveAt: new Date(),
     },
+  });
+}
+
+type LiveWahaSession = {
+  name?: string;
+  status?: string;
+  me?: { id?: string } | null;
+  config?: { proxy?: { server?: string } };
+};
+
+/**
+ * Makes SQLite reflect WAHA before monitor data is returned.
+ * Missing/non-working sessions are kept for history but cannot be selected.
+ */
+export async function syncSendersWithWahaSessions(sessions: LiveWahaSession[]) {
+  const workingSessions = sessions.filter(
+    (session) => session.status === "WORKING" && session.name && session.me?.id
+  );
+  const workingNames = workingSessions.map((session) => session.name as string);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.wahaSender.updateMany({
+      where: {
+        status: "ACTIVE",
+        ...(workingNames.length > 0
+          ? { sessionName: { notIn: workingNames } }
+          : {}),
+      },
+      data: { status: "OFFLINE" },
+    });
+
+    for (const session of workingSessions) {
+      const phoneNumber = session.me!.id!.split("@")[0];
+      if (!/^\d{8,15}$/.test(phoneNumber)) continue;
+
+      const existing = await tx.wahaSender.findUnique({ where: { phoneNumber } });
+      if (existing) {
+        await tx.wahaSender.update({
+          where: { phoneNumber },
+          data: {
+            sessionName: session.name!,
+            status: existing.status === "OFFLINE" ? "ACTIVE" : existing.status,
+            proxyIp: session.config?.proxy?.server ?? existing.proxyIp,
+            lastActiveAt: new Date(),
+          },
+        });
+      } else {
+        await tx.wahaSender.create({
+          data: {
+            phoneNumber,
+            sessionName: session.name!,
+            status: "ACTIVE",
+            maxDailyLimit: 50,
+            proxyIp: session.config?.proxy?.server ?? "",
+          },
+        });
+      }
+    }
   });
 }
 
