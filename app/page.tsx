@@ -46,6 +46,25 @@ type MessageLog = {
   createdAt: string;
 };
 
+type ActivityLog = {
+  id: number;
+  source: string;
+  event: string;
+  status: string;
+  message: string;
+  metadata: string | null;
+  createdAt: string;
+};
+
+type ProxyTestResult = {
+  success: boolean;
+  proxyServer: string;
+  exitIp: string;
+  whatsappReachable: boolean;
+  durationMs: number;
+  testedAt: string;
+};
+
 type MonitorSnapshot = {
   generatedAt: string;
   configuredProxyUrl: string;
@@ -61,6 +80,7 @@ type MonitorSnapshot = {
   };
   senders: WahaSender[];
   messageLogs: MessageLog[];
+  activityLogs: ActivityLog[];
   stats: {
     messages: Record<string, number>;
     senders: Record<string, number>;
@@ -155,6 +175,72 @@ function ToastContainer({
   );
 }
 
+function activityMetadata(value: string | null): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function FloatingActivityMonitor({ logs }: { logs: ActivityLog[] }) {
+  const [expanded, setExpanded] = useState(true);
+
+  return (
+    <aside className="fixed bottom-4 left-4 z-40 w-[calc(100vw-2rem)] max-w-md overflow-hidden rounded-xl border border-cyan-400/25 bg-slate-950/95 shadow-2xl shadow-black/50 backdrop-blur-xl">
+      <button type="button" onClick={() => setExpanded((value) => !value)} className="flex w-full items-center justify-between border-b border-white/10 px-4 py-3 text-left">
+        <span className="flex items-center gap-2 text-sm font-bold text-foreground">
+          <span className="relative flex h-2.5 w-2.5"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-70" /><span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-cyan-400" /></span>
+          Live Activity
+          <span className="font-mono text-[10px] text-foreground/40">{logs.length} events</span>
+        </span>
+        <span className="text-foreground/50">{expanded ? "▼" : "▲"}</span>
+      </button>
+
+      {expanded && (
+        <div className="max-h-[420px] overflow-y-auto p-2">
+          {logs.length === 0 ? (
+            <div className="p-6 text-center text-xs text-foreground/40">Waiting for campaign or AI activity...</div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {logs.slice(0, 20).map((entry) => {
+                const metadata = activityMetadata(entry.metadata);
+                const sender = typeof metadata.senderPhone === "string" ? metadata.senderPhone : null;
+                const target = typeof metadata.targetPhone === "string" ? metadata.targetPhone : null;
+                const proxy = typeof metadata.proxyIp === "string" ? metadata.proxyIp : null;
+                const body = typeof metadata.messageBody === "string" ? metadata.messageBody : null;
+                const campaign = typeof metadata.campaignName === "string" ? metadata.campaignName : null;
+
+                return (
+                  <article key={entry.id} className="rounded-lg border border-white/10 bg-white/[0.035] p-3 text-xs">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className={`rounded px-1.5 py-0.5 font-bold ${entry.source === "CROSS_TALK" ? "bg-indigo-400/15 text-indigo-300" : entry.source === "CAMPAIGN" ? "bg-emerald-400/15 text-emerald-300" : "bg-slate-400/15 text-slate-300"}`}>{entry.source === "CROSS_TALK" ? "AI" : entry.source}</span>
+                        <span className="truncate font-mono text-[10px] text-foreground/50">{entry.event}</span>
+                      </div>
+                      <time className="shrink-0 font-mono text-[10px] text-cyan-300">{new Date(entry.createdAt).toLocaleTimeString("en-GB", { hour12: false })}</time>
+                    </div>
+                    {sender && target && <div className="mt-2 font-mono text-[11px] text-foreground/80">{sender} <span className="text-cyan-400">→</span> {target}</div>}
+                    <p className="mt-1 text-foreground/65">{entry.message}</p>
+                    {body && <p className="mt-1 truncate text-foreground/45" title={body}>“{body}”</p>}
+                    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-foreground/35">
+                      {campaign && <span>campaign: {campaign}</span>}
+                      {proxy && <span>proxy: {proxy}</span>}
+                      <span className={entry.status === "FAILED" ? "text-red-300" : entry.status === "SUCCESS" ? "text-emerald-300" : ""}>{entry.status}</span>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </aside>
+  );
+}
+
 function formatDate(value?: string) {
   if (!value) {
     return "-";
@@ -168,6 +254,13 @@ function formatDate(value?: string) {
 
 function shortText(value: string, max = 64) {
   return value.length > max ? `${value.slice(0, max)}...` : value;
+}
+
+function formatCountdown(totalSeconds: number | null) {
+  if (totalSeconds === null) return "-";
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds.toString().padStart(2, "0")}s` : `${seconds}s`;
 }
 
 function proxyServerFromUrl(value: string) {
@@ -192,6 +285,8 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [savingSender, setSavingSender] = useState(false);
   const [startingSession, setStartingSession] = useState(false);
+  const [testingProxy, setTestingProxy] = useState(false);
+  const [proxyTestResult, setProxyTestResult] = useState<ProxyTestResult | null>(null);
   const [managingSession, setManagingSession] = useState<string | null>(null);
   const [syncingSession, setSyncingSession] = useState<string | null>(null);
   const [runningCampaign, setRunningCampaign] = useState(false);
@@ -209,6 +304,7 @@ export default function DashboardPage() {
   const [queueStatus, setQueueStatus] = useState<{
     global: { PENDING: number; PROCESSING: number; DONE: number; FAILED: number; TOTAL: number };
     campaigns: Array<{ name: string; PENDING: number; PROCESSING: number; DONE: number; FAILED: number; TOTAL: number }>;
+    activeCampaign: { campaignName: string; status: string } | null;
   } | null>(null);
   const [selectedCampaignName, setSelectedCampaignName] = useState<string>("all");
   const [campaignName, setCampaignName] = useState("");
@@ -228,8 +324,8 @@ export default function DashboardPage() {
   const [proxyIp, setProxyIp] = useState("");
   const [targets, setTargets] = useState("");
   const [messageBody, setMessageBody] = useState("");
-  const [minDelayMs, setMinDelayMs] = useState(3000);
-  const [maxDelayMs, setMaxDelayMs] = useState(8000);
+  const [minDelayMs, setMinDelayMs] = useState(30000);
+  const [maxDelayMs, setMaxDelayMs] = useState(90000);
 
   const addToast = useCallback((type: Toast["type"], message: string) => {
     const id = Date.now();
@@ -288,8 +384,8 @@ export default function DashboardPage() {
   useEffect(() => {
     let timeout: NodeJS.Timeout;
     if (autoPilot && !runningCrossTalk) {
-      // Use rate limit delay if available, otherwise random wait between 10s and 45s
-      const delayMs = rateLimitDelayMs || (Math.floor(Math.random() * 35000) + 10000);
+      // Randomized rest window between complete pair conversations: 30s to 2m.
+      const delayMs = rateLimitDelayMs || (Math.floor(Math.random() * 90001) + 30000);
       setCountdown(Math.floor(delayMs / 1000));
 
       timeout = setTimeout(() => {
@@ -475,6 +571,31 @@ export default function DashboardPage() {
     }
   }
 
+  async function testSessionProxy(proxyOverride?: string) {
+    setTestingProxy(true);
+    setProxyTestResult(null);
+
+    try {
+      const response = await fetch("/api/proxy/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proxyUrl: proxyOverride || sessionProxyUrl || undefined }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Proxy test failed.");
+      }
+
+      setProxyTestResult(data);
+      addToast("success", `Proxy is working. Exit IP: ${data.exitIp}`);
+    } catch (error) {
+      addToast("error", error instanceof Error ? error.message : "Proxy test failed.");
+    } finally {
+      setTestingProxy(false);
+    }
+  }
+
   async function manageSession(name: string, action: "start" | "stop" | "force_delete") {
     setManagingSession(`${name}-${action}`);
     try {
@@ -612,6 +733,13 @@ export default function DashboardPage() {
       addToast("success", `Added ${data.queuedCount} targets to the Campaign Queue!`);
       setTargets(""); // Clear textarea
       setCampaignName(""); // Clear campaign name input
+      setCampaignAutoPilot(true);
+      setAutoPilot(true);
+      void fetch("/api/activity", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event: "UNIFIED_AUTOPILOT_STARTED" }),
+      });
       await fetchQueueStatus();
     } catch (error) {
       addToast(
@@ -683,11 +811,34 @@ export default function DashboardPage() {
     }
   }
 
+  function toggleUnifiedAutoPilot() {
+    const shouldStart = !(autoPilot && campaignAutoPilot);
+    setAutoPilot(shouldStart);
+    setCampaignAutoPilot(shouldStart);
+    void fetch("/api/activity", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        event: shouldStart ? "UNIFIED_AUTOPILOT_STARTED" : "UNIFIED_AUTOPILOT_STOPPED",
+      }),
+    });
+    addToast(
+      "success",
+      shouldStart
+        ? "Unified Auto-Pilot started: campaigns and AI cross-talk are active."
+        : "Unified Auto-Pilot stopped."
+    );
+  }
+
   const messageStats = snapshot?.stats.messages ?? {};
   const senderStats = snapshot?.stats.senders ?? {};
   const sessions = snapshot?.waha.sessions ?? [];
   const senders = snapshot?.senders ?? [];
   const logs = snapshot?.messageLogs ?? [];
+  const activityLogs = snapshot?.activityLogs ?? [];
+  const activeCampaignMetrics = queueStatus?.activeCampaign
+    ? queueStatus.campaigns.find((campaign) => campaign.name === queueStatus.activeCampaign?.campaignName) ?? null
+    : null;
 
   return (
     <main className="min-h-screen bg-mesh px-4 py-6 sm:px-6 lg:px-8">
@@ -818,6 +969,43 @@ export default function DashboardPage() {
                   </table>
                 </div>
               </section>
+
+              <section className="glass-card overflow-hidden">
+                <div className="border-b border-white/10 p-5">
+                  <h2 className="text-lg font-semibold text-foreground">Activity Audit Log</h2>
+                  <p className="mt-1 text-sm text-foreground/50">
+                    Campaign and AI activity persisted in SQLite. Refreshes automatically every 5 seconds.
+                  </p>
+                </div>
+                <div className="table-scroll max-h-[520px] overflow-auto">
+                  <table className="data-table">
+                    <thead className="sticky top-0 z-10 bg-slate-950">
+                      <tr>
+                        <th>Time</th>
+                        <th>Source</th>
+                        <th>Event</th>
+                        <th>Status</th>
+                        <th>Details</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activityLogs.length === 0 ? (
+                        <tr><td colSpan={5} className="text-center">No activity recorded yet.</td></tr>
+                      ) : (
+                        activityLogs.map((entry) => (
+                          <tr key={entry.id} className="hover:bg-white/5 transition-colors">
+                            <td className="whitespace-nowrap text-xs text-foreground/70">{formatDate(entry.createdAt)}</td>
+                            <td className="font-mono text-xs">{entry.source}</td>
+                            <td className="font-mono text-xs">{entry.event}</td>
+                            <td><Badge value={entry.status} /></td>
+                            <td className="max-w-xl text-xs" title={entry.message}>{entry.message}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
             </div>
           )}
 
@@ -831,7 +1019,7 @@ export default function DashboardPage() {
                   <h2 className="text-lg font-semibold text-foreground">Create WAHA Session</h2>
                   <p className="mt-1 text-xs text-foreground/50">Register and configure a new WhatsApp WebJS container.</p>
                 </div>
-                <form onSubmit={startSession} className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] items-end gap-4">
+                <form onSubmit={startSession} className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto_auto] items-end gap-4">
                   <div>
                     <label className="field-label" htmlFor="newSessionName">Session Name</label>
                     <input
@@ -851,10 +1039,26 @@ export default function DashboardPage() {
                       type="text"
                       className="input-field font-mono text-xs"
                       value={sessionProxyUrl}
-                      onChange={(e) => setSessionProxyUrl(e.target.value)}
+                      onChange={(e) => { setSessionProxyUrl(e.target.value); setProxyTestResult(null); }}
                       placeholder="http://user:pass@ip:port"
                     />
+                    {proxyTestResult && (
+                      <p className="mt-2 text-xs text-emerald-300">
+                        Exit IP: <span className="font-mono font-bold">{proxyTestResult.exitIp}</span>
+                        {` · ${proxyTestResult.durationMs}ms · WhatsApp reachable`}
+                      </p>
+                    )}
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => void testSessionProxy()}
+                    disabled={testingProxy}
+                    className="btn-secondary py-2.5 px-5 whitespace-nowrap h-[42px] flex items-center justify-center gap-2"
+                  >
+                    {testingProxy ? (
+                      <><span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />Testing...</>
+                    ) : "Test Proxy"}
+                  </button>
                   <button
                     type="submit"
                     disabled={startingSession}
@@ -938,6 +1142,16 @@ export default function DashboardPage() {
                                     {syncingSession === session.name ? "..." : "Sync DB"}
                                   </button>
                                 )}
+                                {session.config?.proxy?.server && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void testSessionProxy(session.config?.proxy?.server)}
+                                    disabled={testingProxy}
+                                    className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 rounded border border-cyan-500/30 transition-colors disabled:opacity-40"
+                                  >
+                                    {testingProxy ? "Testing..." : "Test Proxy"}
+                                  </button>
+                                )}
                                 {/* Delete button */}
                                 <button
                                   onClick={() => { if (confirm(`Delete session "${session.name}"? This will log out the WhatsApp account.`)) manageSession(session.name!, "force_delete"); }}
@@ -1019,41 +1233,91 @@ export default function DashboardPage() {
           {/* ======================= CAMPAIGNS TAB ======================= */}
           {activeTab === "campaigns" && (
             <div className="fade-in flex flex-col gap-6">
-              
-              <div className="glass-card flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 bg-gradient-to-r from-blue-900/20 to-indigo-900/20 border-indigo-500/30">
-                <div>
-                  <h2 className="text-xl font-bold text-foreground text-gradient flex items-center gap-2">
-                    AI Cross-Talk Engine 
-                    {autoPilot && <span className="flex h-3 w-3 relative"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span><span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span></span>}
-                  </h2>
-                  <p className="mt-1 text-sm text-foreground/60 max-w-xl">
-                    Force active senders to chat with each other using Gemini AI. This drastically increases trust scores and avoids WhatsApp bans.
-                  </p>
-                </div>
-                <div className="flex flex-col gap-3 sm:items-end">
-                  <div className="flex items-center gap-3">
-                    <button 
-                      onClick={() => setAutoPilot(!autoPilot)}
-                      className={`btn-primary px-6 py-2 text-sm shadow-xl ${autoPilot ? "bg-red-500 hover:bg-red-600 shadow-red-500/20 text-white" : "bg-green-600 hover:bg-green-500 shadow-green-500/20"}`}
-                    >
-                      {autoPilot ? "Stop Auto-Pilot" : "Start Auto-Pilot"}
-                    </button>
-                    <button 
-                      onClick={triggerCrossTalk}
-                      disabled={runningCrossTalk || autoPilot || (snapshot?.stats.senders.ACTIVE ?? 0) < 2}
-                      className="btn-primary px-6 py-2 text-sm shadow-xl shadow-blue-500/20 disabled:opacity-50"
-                    >
-                      {runningCrossTalk ? "Simulating..." : "Trigger Once"}
-                    </button>
-                  </div>
-                  {autoPilot && (
-                    <div className="text-xs text-indigo-300 animate-pulse font-mono bg-black/20 px-3 py-1 rounded-full border border-indigo-500/30">
-                      {runningCrossTalk ? "Active Chat Session Running..." : `Resting... Next chat in ${countdown}s`}
-                    </div>
-                  )}
-                </div>
-              </div>
 
+              <section className="glass-card flex flex-col gap-5 border-emerald-400/30 bg-gradient-to-r from-emerald-900/20 via-cyan-900/10 to-indigo-900/20 p-6 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="flex items-center gap-3">
+                    <h2 className="text-xl font-black text-foreground">System Control</h2>
+                    {autoPilot && campaignAutoPilot && (
+                      <span className="flex h-3 w-3 relative">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                        <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500" />
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-2 max-w-2xl text-sm text-foreground/60">
+                    One control for campaign delivery and AI pair conversations. Add a campaign and the system starts automatically.
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                    <span className={`rounded border px-2 py-1 ${campaignAutoPilot ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-white/10 bg-white/5 text-foreground/50"}`}>
+                      Campaign: {campaignAutoPilot ? "RUNNING" : "STOPPED"}
+                    </span>
+                    <span className={`rounded border px-2 py-1 ${autoPilot ? "border-indigo-400/30 bg-indigo-400/10 text-indigo-200" : "border-white/10 bg-white/5 text-foreground/50"}`}>
+                      AI Pairs: {autoPilot ? "RUNNING" : "STOPPED"}
+                    </span>
+                    <span className="rounded border border-white/10 bg-white/5 px-2 py-1 text-foreground/60">
+                      Queue: {queueStatus?.global?.PENDING ?? 0} pending
+                    </span>
+                    {autoPilot && (
+                      <span className="rounded border border-indigo-400/20 bg-indigo-400/5 px-2 py-1 font-mono text-indigo-200">
+                        {runningCrossTalk ? "AI conversation active" : `Next AI chat: ${formatCountdown(countdown)}`}
+                      </span>
+                    )}
+                    {campaignAutoPilot && campaignWorkerRunning && (
+                      <span className="rounded border border-emerald-400/20 bg-emerald-400/5 px-2 py-1 font-mono text-emerald-200">Sending campaign job...</span>
+                    )}
+                  </div>
+                  <div className="mt-4 rounded-lg border border-white/10 bg-black/20 p-4">
+                    {queueStatus?.activeCampaign && activeCampaignMetrics ? (
+                      <>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-foreground/40">Active Campaign</p>
+                            <p className="mt-1 truncate text-sm font-bold text-foreground" title={queueStatus.activeCampaign.campaignName}>{queueStatus.activeCampaign.campaignName}</p>
+                          </div>
+                          <Badge value={queueStatus.activeCampaign.status === "PROCESSING" ? "SENDING" : "QUEUED"} />
+                        </div>
+                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+                          <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${activeCampaignMetrics.TOTAL > 0 ? Math.round((activeCampaignMetrics.DONE / activeCampaignMetrics.TOTAL) * 100) : 0}%` }} />
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-3 font-mono text-[10px] text-foreground/50">
+                          <span>{activeCampaignMetrics.DONE}/{activeCampaignMetrics.TOTAL} sent</span>
+                          <span>{activeCampaignMetrics.PENDING} pending</span>
+                          <span className={activeCampaignMetrics.FAILED > 0 ? "text-red-300" : ""}>{activeCampaignMetrics.FAILED} failed</span>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-sm text-foreground/45">No active campaign. Add targets below to start.</p>
+                    )}
+                  </div>
+                  <details className="mt-4 text-xs text-foreground/60">
+                    <summary className="cursor-pointer select-none font-semibold hover:text-foreground">Advanced Controls</summary>
+                    <div className="mt-3 rounded-lg border border-white/10 bg-black/20 p-3">
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={() => setCampaignAutoPilot((value) => !value)} className="btn-secondary px-3 py-2 text-xs">{campaignAutoPilot ? "Stop Campaign Only" : "Start Campaign Only"}</button>
+                        <button type="button" onClick={() => setAutoPilot((value) => !value)} className="btn-secondary px-3 py-2 text-xs">{autoPilot ? "Stop AI Only" : "Start AI Only"}</button>
+                        <button type="button" onClick={() => void triggerCrossTalk()} disabled={runningCrossTalk || autoPilot || (snapshot?.stats.senders.ACTIVE ?? 0) < 2} className="btn-secondary px-3 py-2 text-xs disabled:opacity-40">{runningCrossTalk ? "AI Chat Running..." : "Run One AI Chat"}</button>
+                      </div>
+                      <div className="mt-3 grid gap-2 border-t border-white/10 pt-3 sm:grid-cols-2">
+                        <label>Campaign minimum delay (ms)<input className="input-field mt-1 py-1.5 text-sm" type="number" min={5000} max={300000} step={5000} value={minDelayMs} onChange={(event) => setMinDelayMs(Number(event.target.value))} /></label>
+                        <label>Campaign maximum delay (ms)<input className="input-field mt-1 py-1.5 text-sm" type="number" min={5000} max={300000} step={5000} value={maxDelayMs} onChange={(event) => setMaxDelayMs(Number(event.target.value))} /></label>
+                      </div>
+                    </div>
+                  </details>
+                </div>
+                <button
+                  type="button"
+                  onClick={toggleUnifiedAutoPilot}
+                  className={`min-w-52 rounded-lg px-6 py-3 text-sm font-bold text-white shadow-xl transition-colors ${
+                    autoPilot && campaignAutoPilot
+                      ? "bg-red-500 hover:bg-red-600 shadow-red-500/20"
+                      : "bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/20"
+                  }`}
+                >
+                  {autoPilot && campaignAutoPilot ? "Stop System" : "Start System"}
+                </button>
+              </section>
+              
               <section className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_350px]">
                 <div className="flex flex-col gap-6">
                   <form onSubmit={runCampaign} className="glass-card p-6 flex flex-col gap-5">
@@ -1061,7 +1325,7 @@ export default function DashboardPage() {
                       <div>
                         <h2 className="text-lg font-semibold text-foreground">Campaign Queue Manager</h2>
                         <p className="mt-1 text-sm text-foreground/50">
-                          Add targets to the database queue. The Campaign Auto-Pilot will process them in the background.
+                          Add targets to the queue. System Control processes them automatically in the background.
                         </p>
                       </div>
                       <Badge value={`${targetCount} Targets`} />
@@ -1102,7 +1366,7 @@ export default function DashboardPage() {
                     </div>
 
                     <button className="btn-primary mt-2 text-lg py-3" type="submit" disabled={runningCampaign}>
-                      {runningCampaign ? "Adding to Queue..." : "Add to Queue"}
+                      {runningCampaign ? "Adding & Starting..." : "Add Campaign & Start System"}
                     </button>
                   </form>
 
@@ -1219,44 +1483,6 @@ export default function DashboardPage() {
                     </button>
                   </div>
 
-                  {/* Campaign Auto-Pilot Control */}
-                  <div className="glass-card p-6">
-                    <h2 className="text-lg font-bold text-foreground mb-2">Campaign Auto-Pilot</h2>
-                    <p className="text-sm text-foreground/60 mb-5">
-                      Continuously pulls numbers from the queue and sends messages with human-like typing delays and proxy rotation.
-                    </p>
-                    
-                    <div className="grid gap-3 bg-slate-900/50 p-3 rounded-lg border border-slate-700/50 mb-5">
-                      <div className="text-xs font-semibold text-foreground/50 mb-1 uppercase tracking-wider">Random Delay (ms)</div>
-                      <div className="flex gap-3">
-                        <input
-                          className="input-field text-sm py-1.5"
-                          type="number" min={1000} max={60000} step={500}
-                          value={minDelayMs} onChange={(e) => setMinDelayMs(Number(e.target.value))}
-                          title="Min Delay"
-                        />
-                        <input
-                          className="input-field text-sm py-1.5"
-                          type="number" min={1000} max={60000} step={500}
-                          value={maxDelayMs} onChange={(e) => setMaxDelayMs(Number(e.target.value))}
-                          title="Max Delay"
-                        />
-                      </div>
-                    </div>
-
-                    <button 
-                      onClick={() => setCampaignAutoPilot(!campaignAutoPilot)}
-                      className={`w-full py-3 text-sm font-bold shadow-xl rounded-lg transition-all ${campaignAutoPilot ? "bg-red-500 hover:bg-red-600 shadow-red-500/20 text-white" : "bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/20 text-white"}`}
-                    >
-                      {campaignAutoPilot ? "Stop Campaign Auto-Pilot" : "Start Campaign Auto-Pilot"}
-                    </button>
-                    
-                    {campaignAutoPilot && (
-                      <p className="text-center text-xs text-emerald-400 mt-3 animate-pulse font-mono">
-                        {campaignWorkerRunning ? "Processing job..." : "Waiting for next cycle..."}
-                      </p>
-                    )}
-                  </div>
                 </div>
 
                 <div className="glass-card flex flex-col overflow-hidden">
@@ -1438,6 +1664,8 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
+
+      <FloatingActivityMonitor logs={activityLogs} />
 
       <ToastContainer
         toasts={toasts}

@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/app/lib/db";
+import { prisma, logActivity } from "@/app/lib/db";
 
 export const runtime = "nodejs";
+
+async function recordActivity(input: Parameters<typeof logActivity>[0]) {
+  try {
+    await logActivity(input);
+  } catch (error) {
+    console.error("[AUDIT] Unable to persist queue activity.", error);
+  }
+}
 
 export async function GET(request: Request) {
   try {
@@ -63,6 +71,13 @@ export async function POST(request: Request) {
     const result = await prisma.campaignQueue.createMany({
       data: creates,
     });
+    await recordActivity({
+      source: "CAMPAIGN",
+      event: "CAMPAIGN_QUEUED",
+      status: "SUCCESS",
+      message: `Queued ${result.count} jobs for campaign "${finalCampaignName}".`,
+      metadata: { campaignName: finalCampaignName, queuedCount: result.count },
+    });
 
     return NextResponse.json({
       success: true,
@@ -93,6 +108,13 @@ export async function PATCH(request: Request) {
         errorReason: null,
       },
     });
+    await recordActivity({
+      source: "CAMPAIGN",
+      event: "FAILED_JOBS_RETRIED",
+      status: "INFO",
+      message: `Moved ${result.count} failed jobs back to pending for "${campaignName}".`,
+      metadata: { campaignName, retriedCount: result.count },
+    });
 
     return NextResponse.json({
       success: true,
@@ -114,6 +136,13 @@ export async function DELETE(request: Request) {
         status: "PENDING",
         ...(campaignName ? { campaignName } : {}),
       },
+    });
+    await recordActivity({
+      source: "CAMPAIGN",
+      event: "PENDING_JOBS_REMOVED",
+      status: "WARNING",
+      message: `Removed ${result.count} pending campaign jobs${campaignName ? ` from "${campaignName}"` : " globally"}.`,
+      metadata: { campaignName: campaignName ?? "all", deletedCount: result.count },
     });
 
     return NextResponse.json({

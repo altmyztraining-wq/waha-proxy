@@ -6,6 +6,7 @@ import {
   listSenders,
   getSenderAnalytics,
   syncSendersWithWahaSessions,
+  getRecentActivityLogs,
 } from "@/app/lib/db";
 import { getWahaVersion, listWahaSessions, WahaError } from "@/app/lib/waha";
 
@@ -21,11 +22,13 @@ export async function GET() {
     const [
       messageLogs,
       messageStats,
+      activityLogs,
       wahaVersion,
       wahaSessions,
     ] = await Promise.all([
       getRecentMessageLogs(50),
       getMessageStats(),
+      getRecentActivityLogs(100),
       getWahaVersion(),
       listWahaSessions(),
     ]);
@@ -54,12 +57,15 @@ export async function GET() {
       },
       senders: sendersWithAnalytics,
       messageLogs,
+      activityLogs,
       stats: {
         messages: messageStats,
         senders: senderStats,
       },
     });
   } catch (error: unknown) {
+    console.error("[MONITOR] Unable to load monitoring data.", error);
+
     if (error instanceof WahaError) {
       return NextResponse.json(
         {

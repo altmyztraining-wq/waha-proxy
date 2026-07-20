@@ -322,7 +322,12 @@ export async function createWahaSession({
     body: JSON.stringify(payload),
   });
 
-  return { ...wahaResult, proxyExitIp: proxyCheck.ip };
+  return {
+    ...(typeof wahaResult === "object" && wahaResult !== null
+      ? wahaResult
+      : { data: wahaResult }),
+    proxyExitIp: proxyCheck.ip,
+  };
 }
 
 export async function sendWahaText({
@@ -386,6 +391,10 @@ export async function setWahaPresence(config: {
   phoneNumber: string;
   presence: "typing" | "recording" | "paused";
 }) {
+  // WEBJS can return 500 when the chat has not been created locally yet.
+  // Presence is cosmetic and must never be required for message delivery.
+  if (process.env.WAHA_ENABLE_CHAT_SIGNALS !== "true") return;
+
   const { sessionName, phoneNumber, presence } = config;
 
   const response = await fetch(`${process.env.WAHA_API_URL}/api/${sessionName}/presence`, {
@@ -415,6 +424,9 @@ export async function setWahaSeen(config: {
   sessionName: string;
   phoneNumber: string;
 }) {
+  // Keep read receipts opt-in for the same reason as presence above.
+  if (process.env.WAHA_ENABLE_CHAT_SIGNALS !== "true") return;
+
   const { sessionName, phoneNumber } = config;
 
   const response = await fetch(`${process.env.WAHA_API_URL}/api/sendSeen`, {

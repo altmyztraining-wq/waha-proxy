@@ -53,3 +53,17 @@ model CampaignQueue {
   @@index([createdAt])
   @@index([campaignName])
 }
+
+model ActivityLog {
+  id        Int      @id @default(autoincrement())
+  source    String
+  event     String
+  status    String
+  message   String
+  metadata  String?
+  createdAt DateTime @default(now())
+
+  @@index([source])
+  @@index([status])
+  @@index([createdAt])
+}

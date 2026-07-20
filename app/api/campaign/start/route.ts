@@ -103,14 +103,17 @@ export async function POST(request: Request) {
     resetRoundRobin();
 
     const sessions = await listWahaSessions();
-    const workingSessionNames = sessions
-      .filter((session) => session.status === "WORKING" && session.name)
-      .map((session) => session.name as string);
+    const liveSenderIdentities = sessions
+      .filter((session) => session.status === "WORKING" && session.name && session.me?.id)
+      .map((session) => ({
+        sessionName: session.name as string,
+        phoneNumber: session.me!.id!.split("@")[0],
+      }));
 
     let lastProxyIp: string | undefined = undefined;
 
     for (const [index, targetPhone] of targets.entries()) {
-      const sender = await getNextRoundRobinSender(lastProxyIp, workingSessionNames);
+      const sender = await getNextRoundRobinSender(lastProxyIp, liveSenderIdentities);
 
       if (!sender) {
         results.push({

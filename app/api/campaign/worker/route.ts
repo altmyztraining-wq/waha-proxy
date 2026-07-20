@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma, getNextRoundRobinSender, logMessageResult, lockSender, unlockSender } from "@/app/lib/db";
+import { prisma, getNextRoundRobinSender, logMessageResult, logActivity, lockSender, unlockSender } from "@/app/lib/db";
 import { sendWahaText, setWahaPresence, setWahaSeen, checkProxyHealth, WahaError, calculateTypingTime, listWahaSessions } from "@/app/lib/waha";
 
 export const runtime = "nodejs";
@@ -21,12 +21,23 @@ function errorToReason(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected send failure.";
 }
 
+async function recordActivity(input: Parameters<typeof logActivity>[0]) {
+  try {
+    await logActivity(input);
+  } catch (error) {
+    console.error("[AUDIT] Unable to persist campaign activity.", error);
+  }
+}
+
 export async function POST() {
   try {
     const sessions = await listWahaSessions();
-    const workingSessionNames = sessions
-      .filter((session) => session.status === "WORKING" && session.name)
-      .map((session) => session.name as string);
+    const liveSenderIdentities = sessions
+      .filter((session) => session.status === "WORKING" && session.name && session.me?.id)
+      .map((session) => ({
+        sessionName: session.name as string,
+        phoneNumber: session.me!.id!.split("@")[0],
+      }));
 
     // 1. Find ONE pending job
     const job = await prisma.campaignQueue.findFirst({
@@ -43,14 +54,28 @@ export async function POST() {
       where: { id: job.id },
       data: { status: "PROCESSING" },
     });
+    await recordActivity({
+      source: "CAMPAIGN",
+      event: "JOB_CLAIMED",
+      status: "INFO",
+      message: `Campaign job ${job.id} is processing.`,
+      metadata: { jobId: job.id, campaignName: job.campaignName, targetPhone: job.targetPhone },
+    });
 
     // 3. Find available sender
-    const sender = await getNextRoundRobinSender(undefined, workingSessionNames);
+    const sender = await getNextRoundRobinSender(undefined, liveSenderIdentities);
     if (!sender) {
       // Revert to pending so it can be retried later
       await prisma.campaignQueue.update({
         where: { id: job.id },
         data: { status: "PENDING" },
+      });
+      await recordActivity({
+        source: "CAMPAIGN",
+        event: "JOB_REQUEUED",
+        status: "WARNING",
+        message: `Campaign job ${job.id} was re-queued because no sender was available.`,
+        metadata: { jobId: job.id, campaignName: job.campaignName, targetPhone: job.targetPhone },
       });
       return NextResponse.json({ error: "No available senders. Re-queued." }, { status: 400 });
     }
@@ -58,6 +83,13 @@ export async function POST() {
     const finalMessageBody = parseSpintax(job.messageBody);
 
     lockSender(sender.phoneNumber);
+    await recordActivity({
+      source: "CAMPAIGN",
+      event: "SENDER_SELECTED",
+      status: "INFO",
+      message: `${sender.phoneNumber} selected for campaign job ${job.id}.`,
+      metadata: { jobId: job.id, campaignName: job.campaignName, senderPhone: sender.phoneNumber, targetPhone: job.targetPhone, proxyIp: sender.proxyIp },
+    });
 
     try {
       // Proxy Health Check
@@ -101,6 +133,13 @@ export async function POST() {
         where: { id: job.id },
         data: { status: "DONE" },
       });
+      await recordActivity({
+        source: "CAMPAIGN",
+        event: "MESSAGE_SENT",
+        status: "SUCCESS",
+        message: `${sender.phoneNumber} sent a campaign message to ${job.targetPhone}.`,
+        metadata: { jobId: job.id, campaignName: job.campaignName, senderPhone: sender.phoneNumber, targetPhone: job.targetPhone, proxyIp: sender.proxyIp, messageBody: finalMessageBody },
+      });
 
       return NextResponse.json({ success: true, processedJobId: job.id, status: "SENT" });
 
@@ -113,6 +152,13 @@ export async function POST() {
         where: { id: job.id },
         data: { status: "FAILED", errorReason },
       });
+      await recordActivity({
+        source: "CAMPAIGN",
+        event: "MESSAGE_FAILED",
+        status: "FAILED",
+        message: `Campaign message to ${job.targetPhone} failed: ${errorReason}`,
+        metadata: { jobId: job.id, campaignName: job.campaignName, senderPhone: sender.phoneNumber, targetPhone: job.targetPhone, proxyIp: sender.proxyIp, messageBody: finalMessageBody, errorReason },
+      });
 
       return NextResponse.json({ error: errorReason }, { status: 500 });
     } finally {
@@ -120,6 +166,7 @@ export async function POST() {
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : "Worker failed.";
+    await recordActivity({ source: "CAMPAIGN", event: "WORKER_FAILED", status: "FAILED", message: errorMsg });
     return NextResponse.json({ error: errorMsg }, { status: 500 });
   }
 }

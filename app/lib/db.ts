@@ -146,15 +146,22 @@ let _rrIndex = Math.floor(Math.random() * 1000);
 
 export async function getNextRoundRobinSender(
   lastUsedProxyIp?: string,
-  allowedSessionNames?: string[]
+  liveSenderIdentities?: Array<{ phoneNumber: string; sessionName: string }>
 ): Promise<WahaSender | null> {
-  if (allowedSessionNames && allowedSessionNames.length === 0) return null;
+  if (liveSenderIdentities && liveSenderIdentities.length === 0) return null;
 
   await resetDailySentCountsIfNewDay();
   const activeSenders = await prisma.wahaSender.findMany({
     where: {
       status: "ACTIVE",
-      ...(allowedSessionNames ? { sessionName: { in: allowedSessionNames } } : {}),
+      ...(liveSenderIdentities
+        ? {
+            OR: liveSenderIdentities.map((identity) => ({
+              phoneNumber: identity.phoneNumber,
+              sessionName: identity.sessionName,
+            })),
+          }
+        : {}),
     },
     orderBy: {
       phoneNumber: "asc",
@@ -193,6 +200,58 @@ export async function listSenders(): Promise<WahaSender[]> {
       },
     ],
   });
+}
+
+/**
+ * Selects the pair that has gone the longest without interacting.
+ * New pairs have priority, so every unique pair is covered before repetition.
+ */
+export async function getLeastRecentlyUsedSenderPair(
+  senders: WahaSender[]
+): Promise<[WahaSender, WahaSender] | null> {
+  if (senders.length < 2) return null;
+
+  const phones = senders.map((sender) => sender.phoneNumber);
+  const interactions = await prisma.messageLog.findMany({
+    where: {
+      senderPhone: { in: phones },
+      targetPhone: { in: phones },
+    },
+    select: {
+      senderPhone: true,
+      targetPhone: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const latestByPair = new Map<string, number>();
+  for (const interaction of interactions) {
+    if (interaction.senderPhone === interaction.targetPhone) continue;
+    const key = [interaction.senderPhone, interaction.targetPhone].sort().join(":");
+    if (!latestByPair.has(key)) {
+      latestByPair.set(key, interaction.createdAt.getTime());
+    }
+  }
+
+  const pairs: Array<{ pair: [WahaSender, WahaSender]; lastInteraction: number }> = [];
+  for (let first = 0; first < senders.length; first++) {
+    for (let second = first + 1; second < senders.length; second++) {
+      const key = [senders[first].phoneNumber, senders[second].phoneNumber].sort().join(":");
+      pairs.push({
+        pair: [senders[first], senders[second]],
+        lastInteraction: latestByPair.get(key) ?? 0,
+      });
+    }
+  }
+
+  pairs.sort((left, right) =>
+    left.lastInteraction - right.lastInteraction ||
+    left.pair[0].phoneNumber.localeCompare(right.pair[0].phoneNumber) ||
+    left.pair[1].phoneNumber.localeCompare(right.pair[1].phoneNumber)
+  );
+
+  return pairs[0]?.pair ?? null;
 }
 
 export async function upsertSender({
@@ -289,6 +348,31 @@ export async function getRecentMessageLogs(limit = 50): Promise<MessageLog[]> {
     orderBy: {
       createdAt: "desc",
     },
+  });
+}
+
+export async function logActivity(input: {
+  source: "CAMPAIGN" | "CROSS_TALK" | "SYSTEM";
+  event: string;
+  status: "INFO" | "SUCCESS" | "WARNING" | "FAILED";
+  message: string;
+  metadata?: Record<string, unknown>;
+}) {
+  return prisma.activityLog.create({
+    data: {
+      source: input.source,
+      event: input.event,
+      status: input.status,
+      message: input.message,
+      metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+    },
+  });
+}
+
+export async function getRecentActivityLogs(limit = 100) {
+  return prisma.activityLog.findMany({
+    take: limit,
+    orderBy: { createdAt: "desc" },
   });
 }
 
