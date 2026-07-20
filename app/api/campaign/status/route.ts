@@ -5,13 +5,14 @@ export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    const [counts, processingJob, pendingJob] = await Promise.all([
+    const processingCutoff = new Date(Date.now() - 2 * 60 * 1000);
+    const [counts, processingJob, pendingJob, stuckProcessing] = await Promise.all([
       prisma.campaignQueue.groupBy({
         by: ["campaignName", "status"],
         _count: { _all: true },
       }),
       prisma.campaignQueue.findFirst({
-        where: { status: "PROCESSING" },
+        where: { status: "PROCESSING", updatedAt: { gte: processingCutoff } },
         orderBy: { updatedAt: "asc" },
         select: { campaignName: true, status: true },
       }),
@@ -19,6 +20,9 @@ export async function GET() {
         where: { status: "PENDING" },
         orderBy: { createdAt: "asc" },
         select: { campaignName: true, status: true },
+      }),
+      prisma.campaignQueue.count({
+        where: { status: "PROCESSING", updatedAt: { lt: processingCutoff } },
       }),
     ]);
 
@@ -69,6 +73,7 @@ export async function GET() {
       global: globalMetrics,
       campaigns: campaignsList,
       activeCampaign: processingJob ?? pendingJob ?? null,
+      stuckProcessing,
     });
   } catch (error) {
     return NextResponse.json({ error: "Failed to fetch queue status." }, { status: 500 });

@@ -112,6 +112,7 @@ type CampaignJob = {
   targetPhone: string;
   messageBody: string;
   status: string;
+  displayStatus: string;
   errorReason: string | null;
   createdAt: string;
   updatedAt: string;
@@ -305,6 +306,7 @@ export default function DashboardPage() {
     global: { PENDING: number; PROCESSING: number; DONE: number; FAILED: number; TOTAL: number };
     campaigns: Array<{ name: string; PENDING: number; PROCESSING: number; DONE: number; FAILED: number; TOTAL: number }>;
     activeCampaign: { campaignName: string; status: string } | null;
+    stuckProcessing: number;
   } | null>(null);
   const [selectedCampaignName, setSelectedCampaignName] = useState<string>("all");
   const [campaignName, setCampaignName] = useState("");
@@ -315,6 +317,7 @@ export default function DashboardPage() {
   const [campaignJobs, setCampaignJobs] = useState<CampaignJob[]>([]);
   const [loadingCampaignJobs, setLoadingCampaignJobs] = useState(false);
   const [retryingFailedJobs, setRetryingFailedJobs] = useState(false);
+  const [recoveringStuckJobs, setRecoveringStuckJobs] = useState(false);
 
   const [sessionName, setSessionName] = useState(DEFAULT_SESSION);
   const [sessionProxyUrl, setSessionProxyUrl] = useState("");
@@ -469,7 +472,7 @@ export default function DashboardPage() {
       const response = await fetch("/api/campaign/queue", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ campaignName: viewedCampaignName }),
+        body: JSON.stringify({ campaignName: viewedCampaignName, action: "retry_failed" }),
       });
       const data = await response.json();
 
@@ -483,6 +486,39 @@ export default function DashboardPage() {
       addToast("error", error instanceof Error ? error.message : "Unable to retry failed jobs.");
     } finally {
       setRetryingFailedJobs(false);
+    }
+  }
+
+  async function recoverStuckCampaignJobs() {
+    if (!viewedCampaignName) return;
+
+    const stuckCount = campaignJobs.filter((job) => job.displayStatus === "STUCK").length;
+    if (stuckCount === 0) return;
+
+    if (!window.confirm(`Recover ${stuckCount} stuck job${stuckCount === 1 ? "" : "s"} in "${viewedCampaignName}"? It will be sent again, so a duplicate is possible if WhatsApp received it before the interruption.`)) {
+      return;
+    }
+
+    setRecoveringStuckJobs(true);
+    try {
+      const response = await fetch("/api/campaign/queue", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignName: viewedCampaignName, action: "recover_stuck" }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Unable to recover stuck jobs.");
+      }
+
+      setCampaignAutoPilot(true);
+      addToast("success", `${data.recoveredCount} stuck job${data.recoveredCount === 1 ? "" : "s"} moved back to pending.`);
+      await Promise.all([fetchQueueStatus(), viewCampaign(viewedCampaignName)]);
+    } catch (error) {
+      addToast("error", error instanceof Error ? error.message : "Unable to recover stuck jobs.");
+    } finally {
+      setRecoveringStuckJobs(false);
     }
   }
 
@@ -1258,6 +1294,11 @@ export default function DashboardPage() {
                     <span className="rounded border border-white/10 bg-white/5 px-2 py-1 text-foreground/60">
                       Queue: {queueStatus?.global?.PENDING ?? 0} pending
                     </span>
+                    {(queueStatus?.stuckProcessing ?? 0) > 0 && (
+                      <span className="rounded border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-amber-200">
+                        {queueStatus?.stuckProcessing} old stuck record
+                      </span>
+                    )}
                     {autoPilot && (
                       <span className="rounded border border-indigo-400/20 bg-indigo-400/5 px-2 py-1 font-mono text-indigo-200">
                         {runningCrossTalk ? "AI conversation active" : `Next AI chat: ${formatCountdown(countdown)}`}
@@ -1582,7 +1623,7 @@ export default function DashboardPage() {
                     {campaignJobs.map((job) => (
                       <tr key={job.id}>
                         <td className="whitespace-nowrap font-mono">{job.targetPhone}</td>
-                        <td><Badge value={job.status} /></td>
+                        <td><Badge value={job.displayStatus ?? job.status} /></td>
                         <td className="max-w-64" title={job.messageBody}>{shortText(job.messageBody, 80)}</td>
                         <td className="max-w-56 text-red-300" title={job.errorReason ?? undefined}>
                           {job.errorReason ? shortText(job.errorReason, 70) : "-"}
@@ -1599,6 +1640,16 @@ export default function DashboardPage() {
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 p-4 text-xs text-foreground/50">
               <span>{campaignJobs.length} job{campaignJobs.length === 1 ? "" : "s"}</span>
               <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => void recoverStuckCampaignJobs()}
+                  disabled={recoveringStuckJobs || campaignJobs.every((job) => job.displayStatus !== "STUCK")}
+                  className="rounded-lg border border-orange-400/30 bg-orange-400/10 px-4 py-2 font-bold text-orange-200 transition-colors hover:bg-orange-400/20 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  {recoveringStuckJobs
+                    ? "Recovering..."
+                    : `Recover Stuck (${campaignJobs.filter((job) => job.displayStatus === "STUCK").length})`}
+                </button>
                 <button
                   type="button"
                   onClick={() => void retryFailedCampaignJobs()}

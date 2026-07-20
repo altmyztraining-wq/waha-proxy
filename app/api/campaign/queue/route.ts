@@ -34,7 +34,16 @@ export async function GET(request: Request) {
       },
     });
 
-    return NextResponse.json({ campaignName, jobs });
+    const stuckBefore = Date.now() - 2 * 60 * 1000;
+    const jobsWithDisplayStatus = jobs.map((job) => ({
+      ...job,
+      displayStatus:
+        job.status === "PROCESSING" && job.updatedAt.getTime() < stuckBefore
+          ? "STUCK"
+          : job.status,
+    }));
+
+    return NextResponse.json({ campaignName, jobs: jobsWithDisplayStatus });
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : "Failed to load campaign details.";
     return NextResponse.json({ error: errorMsg }, { status: 500 });
@@ -93,9 +102,38 @@ export async function PATCH(request: Request) {
   try {
     const body = await request.json();
     const campaignName = typeof body.campaignName === "string" ? body.campaignName.trim() : "";
+    const action = typeof body.action === "string" ? body.action : "retry_failed";
 
     if (!campaignName) {
       return NextResponse.json({ error: "Campaign name is required." }, { status: 400 });
+    }
+
+    if (action === "recover_stuck") {
+      const stuckBefore = new Date(Date.now() - 2 * 60 * 1000);
+      const result = await prisma.campaignQueue.updateMany({
+        where: {
+          campaignName,
+          status: "PROCESSING",
+          updatedAt: { lt: stuckBefore },
+        },
+        data: {
+          status: "PENDING",
+          errorReason: null,
+        },
+      });
+      await recordActivity({
+        source: "CAMPAIGN",
+        event: "STUCK_JOBS_RECOVERED",
+        status: "WARNING",
+        message: `Recovered ${result.count} stuck jobs for "${campaignName}".`,
+        metadata: { campaignName, recoveredCount: result.count },
+      });
+
+      return NextResponse.json({ success: true, recoveredCount: result.count });
+    }
+
+    if (action !== "retry_failed") {
+      return NextResponse.json({ error: "Unsupported recovery action." }, { status: 400 });
     }
 
     const result = await prisma.campaignQueue.updateMany({
