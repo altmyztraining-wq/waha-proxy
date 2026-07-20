@@ -187,7 +187,7 @@ function activityMetadata(value: string | null): Record<string, unknown> {
 }
 
 function FloatingActivityMonitor({ logs }: { logs: ActivityLog[] }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <aside className="fixed bottom-4 left-4 z-40 w-[calc(100vw-2rem)] max-w-md overflow-hidden rounded-xl border border-cyan-400/25 bg-slate-950/95 shadow-2xl shadow-black/50 backdrop-blur-xl">
