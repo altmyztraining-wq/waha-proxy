@@ -31,6 +31,17 @@ async function recordActivity(input: Parameters<typeof logActivity>[0]) {
 
 export async function POST() {
   try {
+    const latestSystemEvent = await prisma.activityLog.findFirst({
+      where: {
+        source: "SYSTEM",
+        event: { in: ["UNIFIED_AUTOPILOT_STARTED", "UNIFIED_AUTOPILOT_STOPPED"] },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    if (latestSystemEvent?.event !== "UNIFIED_AUTOPILOT_STARTED") {
+      return NextResponse.json({ message: "System is stopped." });
+    }
+
     const sessions = await listWahaSessions();
     const liveSenderIdentities = sessions
       .filter((session) => session.status === "WORKING" && session.name && session.me?.id)
@@ -39,15 +50,28 @@ export async function POST() {
         phoneNumber: session.me!.id!.split("@")[0],
       }));
 
-    // 1. Find ONE pending job
-    const job = await prisma.campaignQueue.findFirst({
-      where: { status: "PENDING" },
-      orderBy: { createdAt: "asc" },
-    });
+    // Find one due job. Alternate acknowledgement and campaign work when both
+    // exist so replies are interleaved without a fixed "every N messages" rule.
+    const now = new Date();
+    const [replyJob, campaignJob] = await Promise.all([
+      prisma.campaignQueue.findFirst({
+        where: { status: "PENDING", jobType: "AUTO_REPLY", scheduledAt: { lte: now } },
+        orderBy: { scheduledAt: "asc" },
+      }),
+      prisma.campaignQueue.findFirst({
+        where: { status: "PENDING", jobType: "CAMPAIGN", scheduledAt: { lte: now } },
+        orderBy: { createdAt: "asc" },
+      }),
+    ]);
+    const job = replyJob && campaignJob
+      ? (globalThis.__lastQueueJobType === "AUTO_REPLY" ? campaignJob : replyJob)
+      : (replyJob ?? campaignJob);
 
     if (!job) {
       return NextResponse.json({ message: "Queue is empty." });
     }
+    globalThis.__lastQueueJobType = job.jobType;
+    const activitySource = job.jobType === "AUTO_REPLY" ? "AUTO_REPLY" as const : "CAMPAIGN" as const;
 
     // 2. Mark as processing
     await prisma.campaignQueue.update({
@@ -55,7 +79,7 @@ export async function POST() {
       data: { status: "PROCESSING" },
     });
     await recordActivity({
-      source: "CAMPAIGN",
+      source: activitySource,
       event: "JOB_CLAIMED",
       status: "INFO",
       message: `Campaign job ${job.id} is processing.`,
@@ -63,7 +87,15 @@ export async function POST() {
     });
 
     // 3. Find available sender
-    const sender = await getNextRoundRobinSender(undefined, liveSenderIdentities);
+    const sender = job.jobType === "AUTO_REPLY"
+      ? await prisma.wahaSender.findFirst({
+          where: {
+            sessionName: job.sessionName ?? "",
+            status: "ACTIVE",
+            phoneNumber: { in: liveSenderIdentities.map((identity) => identity.phoneNumber) },
+          },
+        })
+      : await getNextRoundRobinSender(undefined, liveSenderIdentities);
     if (!sender) {
       // Revert to pending so it can be retried later
       await prisma.campaignQueue.update({
@@ -71,7 +103,7 @@ export async function POST() {
         data: { status: "PENDING" },
       });
       await recordActivity({
-        source: "CAMPAIGN",
+        source: activitySource,
         event: "JOB_REQUEUED",
         status: "WARNING",
         message: `Campaign job ${job.id} was re-queued because no sender was available.`,
@@ -84,7 +116,7 @@ export async function POST() {
 
     lockSender(sender.phoneNumber);
     await recordActivity({
-      source: "CAMPAIGN",
+      source: activitySource,
       event: "SENDER_SELECTED",
       status: "INFO",
       message: `${sender.phoneNumber} selected for campaign job ${job.id}.`,
@@ -134,10 +166,12 @@ export async function POST() {
         data: { status: "DONE" },
       });
       await recordActivity({
-        source: "CAMPAIGN",
+        source: activitySource,
         event: "MESSAGE_SENT",
         status: "SUCCESS",
-        message: `${sender.phoneNumber} sent a campaign message to ${job.targetPhone}.`,
+        message: job.jobType === "AUTO_REPLY"
+          ? `${sender.phoneNumber} sent an acknowledgement to ${job.targetPhone}.`
+          : `${sender.phoneNumber} sent a campaign message to ${job.targetPhone}.`,
         metadata: { jobId: job.id, campaignName: job.campaignName, senderPhone: sender.phoneNumber, targetPhone: job.targetPhone, proxyIp: sender.proxyIp, messageBody: finalMessageBody },
       });
 
@@ -153,7 +187,7 @@ export async function POST() {
         data: { status: "FAILED", errorReason },
       });
       await recordActivity({
-        source: "CAMPAIGN",
+        source: activitySource,
         event: "MESSAGE_FAILED",
         status: "FAILED",
         message: `Campaign message to ${job.targetPhone} failed: ${errorReason}`,

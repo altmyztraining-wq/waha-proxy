@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { logActivity } from "@/app/lib/db";
+import { logActivity, prisma } from "@/app/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,6 +26,13 @@ export async function POST(request: Request) {
         ? "Unified Auto-Pilot started both campaign and AI engines."
         : "Unified Auto-Pilot stopped both campaign and AI engines.",
     });
+
+    if (event === "UNIFIED_AUTOPILOT_STOPPED") {
+      await prisma.campaignQueue.updateMany({
+        where: { jobType: "AUTO_REPLY", status: "PENDING" },
+        data: { status: "CANCELLED", errorReason: "System stopped before the acknowledgement was sent." },
+      });
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

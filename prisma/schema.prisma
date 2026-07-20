@@ -42,16 +42,21 @@ model MessageLog {
 model CampaignQueue {
   id           Int      @id @default(autoincrement())
   campaignName String   @default("Default Campaign")
+  jobType      String   @default("CAMPAIGN") // CAMPAIGN, AUTO_REPLY
+  sessionName  String?
+  sourceMessageId String? @unique
   targetPhone  String
   messageBody  String
   status       String   @default("PENDING") // PENDING, DONE, FAILED
   errorReason  String?
+  scheduledAt  DateTime @default(now())
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   @@index([status])
   @@index([createdAt])
   @@index([campaignName])
+  @@index([jobType, status, scheduledAt])
 }
 
 model ActivityLog {

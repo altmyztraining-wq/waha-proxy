@@ -352,7 +352,7 @@ export async function getRecentMessageLogs(limit = 50): Promise<MessageLog[]> {
 }
 
 export async function logActivity(input: {
-  source: "CAMPAIGN" | "CROSS_TALK" | "SYSTEM";
+  source: "CAMPAIGN" | "CROSS_TALK" | "AUTO_REPLY" | "SYSTEM";
   event: string;
   status: "INFO" | "SUCCESS" | "WARNING" | "FAILED";
   message: string;

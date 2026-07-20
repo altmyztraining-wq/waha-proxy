@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { listSenders, logMessageResult, logActivity, getChatHistory, getLeastRecentlyUsedSenderPair, lockSender, unlockSender, isSenderBusy } from "@/app/lib/db";
-import { sendWahaText, setWahaPresence, setWahaSeen, checkProxyHealth, calculateTypingTime, listWahaSessions } from "@/app/lib/waha";
+import { prisma, listSenders, logMessageResult, logActivity, getChatHistory, getLeastRecentlyUsedSenderPair, lockSender, unlockSender, isSenderBusy } from "@/app/lib/db";
+import { sendWahaText, setWahaPresence, setWahaSeen, checkProxyHealth, calculateTypingTime, listWahaSessions, WahaError } from "@/app/lib/waha";
 import { generateCrossTalkMessage, RateLimitError } from "@/app/lib/gemini";
 
 export const runtime = "nodejs";
@@ -18,8 +18,69 @@ async function recordActivity(input: Parameters<typeof logActivity>[0]) {
   }
 }
 
-export async function POST() {
+function deliveryErrorReason(error: unknown) {
+  if (error instanceof WahaError) {
+    const details = error.details === undefined
+      ? ""
+      : typeof error.details === "string"
+        ? error.details
+        : JSON.stringify(error.details);
+    return [`WAHA ${error.status}`, error.message, details].filter(Boolean).join(" - ");
+  }
+  return error instanceof Error ? error.message : "AI message delivery failed.";
+}
+
+async function sendAndLogAiBubble(input: {
+  sessionName: string;
+  senderPhone: string;
+  targetPhone: string;
+  proxyIp: string;
+  message: string;
+}) {
   try {
+    await sendWahaText({
+      sessionName: input.sessionName,
+      phoneNumber: input.targetPhone,
+      message: input.message,
+    });
+    await logMessageResult(input.senderPhone, input.targetPhone, input.message, "SENT");
+  } catch (error) {
+    const errorReason = deliveryErrorReason(error);
+    await logMessageResult(input.senderPhone, input.targetPhone, input.message, "FAILED", errorReason);
+    const sender = await prisma.wahaSender.findUnique({
+      where: { phoneNumber: input.senderPhone },
+      select: { status: true },
+    });
+    await recordActivity({
+      source: "CROSS_TALK",
+      event: "MESSAGE_FAILED",
+      status: "FAILED",
+      message: `${input.senderPhone} failed to send an AI message to ${input.targetPhone}: ${errorReason}`,
+      metadata: {
+        senderPhone: input.senderPhone,
+        targetPhone: input.targetPhone,
+        proxyIp: input.proxyIp,
+        messageBody: input.message,
+        errorReason,
+        senderStatusAfterFailure: sender?.status ?? "UNKNOWN",
+      },
+    });
+    throw error;
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const manual = new URL(request.url).searchParams.get("manual") === "true";
+    if (!manual) {
+      const latestSystemEvent = await prisma.activityLog.findFirst({
+        where: { source: "SYSTEM", event: { in: ["UNIFIED_AUTOPILOT_STARTED", "UNIFIED_AUTOPILOT_STOPPED"] } },
+        orderBy: { createdAt: "desc" },
+      });
+      if (latestSystemEvent?.event !== "UNIFIED_AUTOPILOT_STARTED") {
+        return NextResponse.json({ message: "System is stopped." });
+      }
+    }
     const senders = await listSenders();
     const sessions = await listWahaSessions();
     const livePhoneBySession = new Map(
@@ -106,12 +167,13 @@ export async function POST() {
       });
       await sleep(Math.floor(Math.random() * 4000) + 2000); // 2-6s before sending
 
-      await sendWahaText({
+      await sendAndLogAiBubble({
         sessionName: sender1.sessionName,
-        phoneNumber: sender2.phoneNumber,
+        senderPhone: sender1.phoneNumber,
+        targetPhone: sender2.phoneNumber,
+        proxyIp: sender1.proxyIp,
         message: msg,
       });
-      await logMessageResult(sender1.phoneNumber, sender2.phoneNumber, msg, "SENT");
       await recordActivity({ source: "CROSS_TALK", event: "MESSAGE_SENT", status: "SUCCESS", message: `${sender1.phoneNumber} sent an AI message to ${sender2.phoneNumber}.`, metadata: { senderPhone: sender1.phoneNumber, targetPhone: sender2.phoneNumber, proxyIp: sender1.proxyIp, messageBody: msg } });
       conversation.push({ from: sender1.phoneNumber, to: sender2.phoneNumber, message: msg });
 
@@ -155,12 +217,13 @@ export async function POST() {
       });
       await sleep(Math.floor(Math.random() * 4000) + 2000);
 
-      await sendWahaText({
+      await sendAndLogAiBubble({
         sessionName: sender2.sessionName,
-        phoneNumber: sender1.phoneNumber,
+        senderPhone: sender2.phoneNumber,
+        targetPhone: sender1.phoneNumber,
+        proxyIp: sender2.proxyIp,
         message: msg,
       });
-      await logMessageResult(sender2.phoneNumber, sender1.phoneNumber, msg, "SENT");
       await recordActivity({ source: "CROSS_TALK", event: "MESSAGE_SENT", status: "SUCCESS", message: `${sender2.phoneNumber} replied to ${sender1.phoneNumber}.`, metadata: { senderPhone: sender2.phoneNumber, targetPhone: sender1.phoneNumber, proxyIp: sender2.proxyIp, messageBody: msg } });
       conversation.push({ from: sender2.phoneNumber, to: sender1.phoneNumber, message: msg });
 

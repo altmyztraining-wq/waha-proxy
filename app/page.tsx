@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type SenderStatus = "ACTIVE" | "BANNED" | "RESTING" | "OFFLINE";
 type MessageStatus = "SENT" | "FAILED" | "PENDING";
@@ -300,8 +300,6 @@ export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<"overview" | "sessions" | "campaigns">("overview");
 
   const [autoPilot, setAutoPilot] = useState(false);
-  const [countdown, setCountdown] = useState<number | null>(null);
-  const [rateLimitDelayMs, setRateLimitDelayMs] = useState<number | null>(null);
 
   // Campaign & Queue States
   const [queueStatus, setQueueStatus] = useState<{
@@ -313,7 +311,6 @@ export default function DashboardPage() {
   const [selectedCampaignName, setSelectedCampaignName] = useState<string>("all");
   const [campaignName, setCampaignName] = useState("");
   const [campaignAutoPilot, setCampaignAutoPilot] = useState(false);
-  const [campaignWorkerRunning, setCampaignWorkerRunning] = useState(false);
   const [resettingQueue, setResettingQueue] = useState(false);
   const [viewedCampaignName, setViewedCampaignName] = useState<string | null>(null);
   const [campaignJobs, setCampaignJobs] = useState<CampaignJob[]>([]);
@@ -329,8 +326,6 @@ export default function DashboardPage() {
   const [proxyIp, setProxyIp] = useState("");
   const [targets, setTargets] = useState("");
   const [messageBody, setMessageBody] = useState("");
-  const [minDelayMs, setMinDelayMs] = useState(30000);
-  const [maxDelayMs, setMaxDelayMs] = useState(90000);
 
   const addToast = useCallback((type: Toast["type"], message: string) => {
     const id = Date.now();
@@ -385,34 +380,6 @@ export default function DashboardPage() {
     };
   }, [refresh]);
 
-  // AI Cross-Talk Auto-Pilot Logic
-  useEffect(() => {
-    let timeout: NodeJS.Timeout;
-    if (autoPilot && !runningCrossTalk) {
-      // Randomized rest window between complete pair conversations: 30s to 2m.
-      const delayMs = rateLimitDelayMs || (Math.floor(Math.random() * 90001) + 30000);
-      setCountdown(Math.floor(delayMs / 1000));
-
-      timeout = setTimeout(() => {
-        if (rateLimitDelayMs) {
-          setRateLimitDelayMs(null);
-        }
-        void triggerCrossTalk();
-      }, delayMs);
-    }
-    return () => clearTimeout(timeout);
-  }, [autoPilot, runningCrossTalk, rateLimitDelayMs]);
-
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (autoPilot && countdown !== null && countdown > 0 && !runningCrossTalk) {
-      interval = setInterval(() => {
-        setCountdown((prev) => (prev && prev > 0 ? prev - 1 : 0));
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [autoPilot, countdown, runningCrossTalk]);
-
   // Campaign Queue Polling
   const fetchQueueStatus = useCallback(async () => {
     try {
@@ -431,8 +398,6 @@ export default function DashboardPage() {
     const interval = setInterval(fetchQueueStatus, 10000);
     return () => clearInterval(interval);
   }, [fetchQueueStatus]);
-
-  const workerRef = useRef(false);
 
   async function viewCampaign(name: string) {
     setSelectedCampaignName(name);
@@ -523,42 +488,6 @@ export default function DashboardPage() {
       setRecoveringStuckJobs(false);
     }
   }
-
-  // Campaign Worker Auto-Pilot
-  useEffect(() => {
-    let timeout: NodeJS.Timeout;
-    const runWorker = async () => {
-      if (!campaignAutoPilot || workerRef.current) return;
-      
-      workerRef.current = true;
-      setCampaignWorkerRunning(true);
-      let isEmpty = false;
-      try {
-        const response = await fetch("/api/campaign/worker", { method: "POST" });
-        const data = await response.json();
-        if (data.message === "Queue is empty.") {
-          isEmpty = true;
-        }
-        await fetchQueueStatus();
-      } catch (e) {
-        // ignore
-      } finally {
-        workerRef.current = false;
-        setCampaignWorkerRunning(false);
-        // If queue is empty, wait 5 seconds before polling again. 
-        // Otherwise, apply the realistic human typing delay between messages.
-        const delayMs = isEmpty 
-          ? 5000 
-          : Math.floor(Math.random() * (maxDelayMs - minDelayMs + 1)) + minDelayMs;
-        timeout = setTimeout(runWorker, delayMs);
-      }
-    };
-
-    if (campaignAutoPilot) {
-      runWorker();
-    }
-    return () => clearTimeout(timeout);
-  }, [campaignAutoPilot]);
 
   const selectedSession = useMemo(
     () =>
@@ -824,11 +753,10 @@ export default function DashboardPage() {
   async function triggerCrossTalk() {
     setRunningCrossTalk(true);
     try {
-      const response = await fetch("/api/cross-talk", { method: "POST" });
+      const response = await fetch("/api/cross-talk?manual=true", { method: "POST" });
       const data = await response.json();
 
       if (response.status === 429 && data.retryDelayMs) {
-        setRateLimitDelayMs(data.retryDelayMs);
         addToast("error", `API Rate Limit! Pausing AI Chat for ${Math.ceil(data.retryDelayMs / 1000)}s...`);
         return;
       }
@@ -1320,11 +1248,11 @@ export default function DashboardPage() {
                     )}
                     {autoPilot && (
                       <span className="rounded border border-indigo-400/20 bg-indigo-400/5 px-2 py-1 font-mono text-indigo-200">
-                        {runningCrossTalk ? "AI conversation active" : `Next AI chat: ${formatCountdown(countdown)}`}
+                        {runningCrossTalk ? "Manual AI conversation active" : "Backend AI scheduler active"}
                       </span>
                     )}
-                    {campaignAutoPilot && campaignWorkerRunning && (
-                      <span className="rounded border border-emerald-400/20 bg-emerald-400/5 px-2 py-1 font-mono text-emerald-200">Sending campaign job...</span>
+                    {campaignAutoPilot && (queueStatus?.global.PROCESSING ?? 0) > 0 && (
+                      <span className="rounded border border-emerald-400/20 bg-emerald-400/5 px-2 py-1 font-mono text-emerald-200">Backend worker is processing...</span>
                     )}
                   </div>
                   <div className="mt-4 rounded-lg border border-white/10 bg-black/20 p-4">
@@ -1358,10 +1286,7 @@ export default function DashboardPage() {
                         <button type="button" onClick={() => setAutoPilot((value) => !value)} className="btn-secondary px-3 py-2 text-xs">{autoPilot ? "Stop AI Only" : "Start AI Only"}</button>
                         <button type="button" onClick={() => void triggerCrossTalk()} disabled={runningCrossTalk || autoPilot || (snapshot?.stats.senders.ACTIVE ?? 0) < 2} className="btn-secondary px-3 py-2 text-xs disabled:opacity-40">{runningCrossTalk ? "AI Chat Running..." : "Run One AI Chat"}</button>
                       </div>
-                      <div className="mt-3 grid gap-2 border-t border-white/10 pt-3 sm:grid-cols-2">
-                        <label>Campaign minimum delay (ms)<input className="input-field mt-1 py-1.5 text-sm" type="number" min={5000} max={300000} step={5000} value={minDelayMs} onChange={(event) => setMinDelayMs(Number(event.target.value))} /></label>
-                        <label>Campaign maximum delay (ms)<input className="input-field mt-1 py-1.5 text-sm" type="number" min={5000} max={300000} step={5000} value={maxDelayMs} onChange={(event) => setMaxDelayMs(Number(event.target.value))} /></label>
-                      </div>
+                      <p className="mt-3 border-t border-white/10 pt-3 text-foreground/50">Campaign and customer replies run in the backend even when this page is closed. Backend delay: 30–90 seconds.</p>
                     </div>
                   </details>
                 </div>
@@ -1484,7 +1409,7 @@ export default function DashboardPage() {
                     <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                       <h2 className="text-lg font-bold text-foreground flex items-center gap-2">
                         Queue Metrics
-                        {campaignWorkerRunning && <span className="flex h-2 w-2 relative ml-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span>}
+                        {(queueStatus?.global.PROCESSING ?? 0) > 0 && <span className="flex h-2 w-2 relative ml-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span>}
                       </h2>
                       <select
                         value={selectedCampaignName}
