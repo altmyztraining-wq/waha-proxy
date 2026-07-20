@@ -1,12 +1,33 @@
 services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: waha-backend
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    environment:
+      DEPLOYMENT_MODE: backend
+      WAHA_API_URL: http://waha:3000
+      BACKEND_INTERNAL_URL: http://127.0.0.1:3101
+      PORT: "3101"
+      HOSTNAME: 0.0.0.0
+    ports:
+      - "127.0.0.1:3101:3101"
+    volumes:
+      - ./prisma:/app/prisma
+    depends_on:
+      - waha
+
   waha:
     image: devlikeapro/waha:chrome
     container_name: waha
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3100:3000"
     environment:
-      WAHA_API_KEY: mywahakey
+      WAHA_API_KEY: ${WAHA_API_KEY:?WAHA_API_KEY must be set}
       WAHA_DASHBOARD_ENABLED: "false"
       WAHA_DASHBOARD_USERNAME: admin
       WAHA_DASHBOARD_PASSWORD: admin123
@@ -15,7 +36,7 @@ services:
       TZ: Africa/Cairo
       WAHA_RUN_XVFB: "false"
       WAHA_WEBJS_PUPPETEER_ARGS: --no-sandbox --disable-setuid-sandbox --disable-blink-features=AutomationControlled --disable-infobars --window-position=0,0 --ignore-certifcate-errors --ignore-certifcate-errors-spki-list --disable-default-apps --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-      WHATSAPP_WEBHOOK_URL: "http://host.docker.internal:3001/api/webhook"
+      WHATSAPP_WEBHOOK_URL: "http://backend:3101/api/webhook"
       WHATSAPP_WEBHOOK_EVENTS: "message,message.any,session.status"
     volumes:
       - ./.waha/.sessions:/app/.sessions

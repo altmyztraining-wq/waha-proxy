@@ -223,21 +223,19 @@ export async function assertWahaWebjsEngine() {
 }
 
 /**
- * Runs a command inside the WAHA Docker container and returns stdout.
+ * Runs a network check from the backend container. The backend and WAHA share
+ * the same Docker network, so this verifies the proxy from the Docker runtime
+ * without mounting the privileged Docker socket.
  */
-function execInDocker(cmd: string, timeoutMs = 15000): Promise<string> {
+function execNetworkCheck(cmd: string, timeoutMs = 15000): Promise<string> {
   return new Promise((resolve, reject) => {
-    exec(
-      `docker exec waha ${cmd}`,
-      { timeout: timeoutMs },
-      (error, stdout, stderr) => {
-        if (error) {
-          reject(new Error(stderr?.trim() || error.message));
-        } else {
-          resolve(stdout.trim());
-        }
+    exec(cmd, { timeout: timeoutMs }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(stderr?.trim() || error.message));
+      } else {
+        resolve(stdout.trim());
       }
-    );
+    });
   });
 }
 
@@ -260,7 +258,7 @@ export async function verifyProxyFromDocker(proxyUrl: string): Promise<{ ip: str
   // Step 1: Check proxy returns an IP
   let proxyIp: string;
   try {
-    proxyIp = await execInDocker(
+    proxyIp = await execNetworkCheck(
       `curl -s -x ${proxyArg} http://api.ipify.org --max-time 10`
     );
   } catch {
@@ -279,7 +277,7 @@ export async function verifyProxyFromDocker(proxyUrl: string): Promise<{ ip: str
 
   // Step 2: Verify proxy can reach WhatsApp
   try {
-    const whatsappResult = await execInDocker(
+    const whatsappResult = await execNetworkCheck(
       `curl -s -o /dev/null -w "%{http_code}" -I -L -x ${proxyArg} https://web.whatsapp.com/ --max-time 15`
     );
     const statusCode = parseInt(whatsappResult, 10);

@@ -1,0 +1,9 @@
+.git
+.next
+node_modules
+.env*
+!.env.example
+.waha
+*.log
+*.tsbuildinfo
+prisma/dev.db-journal
