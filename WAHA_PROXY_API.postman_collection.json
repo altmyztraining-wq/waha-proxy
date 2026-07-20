@@ -1,0 +1,298 @@
+{
+  "info": {
+    "_postman_id": "fa87c470-c52f-4f8a-a4fd-86ac7623c193",
+    "name": "WAHA Proxy Backend API",
+    "description": "Control the laptop-hosted WAHA Proxy Backend through an authenticated ngrok endpoint. See PUBLIC_API_REFERENCE.md.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "basic",
+    "basic": [
+      { "key": "username", "value": "{{basicUsername}}", "type": "string" },
+      { "key": "password", "value": "{{basicPassword}}", "type": "string" }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const baseUrl = pm.variables.replaceIn('{{baseUrl}}');",
+          "const password = pm.variables.replaceIn('{{basicPassword}}');",
+          "if (!baseUrl || baseUrl.includes('YOUR-ENDPOINT')) { throw new Error('Set the collection variable baseUrl to the active ngrok HTTPS URL.'); }",
+          "if (baseUrl.includes('ngrok') && (!password || password === 'REPLACE_ME')) { throw new Error('Set basicPassword before calling the public ngrok API.'); }",
+          "pm.request.headers.upsert({ key: 'ngrok-skip-browser-warning', value: 'true' });"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "https://YOUR-ENDPOINT.ngrok.app" },
+    { "key": "basicUsername", "value": "postman" },
+    { "key": "basicPassword", "value": "REPLACE_ME", "type": "secret" },
+    { "key": "sessionName", "value": "201000000000" },
+    { "key": "senderPhone", "value": "201000000000" },
+    { "key": "targetPhone", "value": "201000000001" },
+    { "key": "secondTargetPhone", "value": "201000000002" },
+    { "key": "proxyUrl", "value": "http://100.x.y.z:8080" },
+    { "key": "proxyServer", "value": "100.x.y.z:8080" },
+    { "key": "campaignName", "value": "postman-test" }
+  ],
+  "item": [
+    {
+      "name": "00 Security Checks",
+      "item": [
+        {
+          "name": "Non-API Route Is Blocked",
+          "request": { "method": "GET", "url": "{{baseUrl}}/" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('ngrok blocks non-API routes with 404', () => pm.response.to.have.status(404));"], "type": "text/javascript" } }]
+        },
+        {
+          "name": "API Without Authentication Is Rejected",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": "{{baseUrl}}/api/campaign/status"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('ngrok rejects missing Basic Auth with 401', () => pm.response.to.have.status(401));"], "type": "text/javascript" } }]
+        },
+        {
+          "name": "API With Authentication Is Allowed",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/campaign/status" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Authenticated API returns 200', () => pm.response.to.have.status(200));"], "type": "text/javascript" } }]
+        }
+      ]
+    },
+    {
+      "name": "01 System",
+      "item": [
+        {
+          "name": "Campaign Status / Backend Health",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/campaign/status" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('HTTP 200', () => pm.response.to.have.status(200));", "pm.test('Has global metrics', () => pm.expect(pm.response.json()).to.have.property('global'));"], "type": "text/javascript" } }]
+        },
+        {
+          "name": "Full Monitor",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/monitor" },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('HTTP 200', () => pm.response.to.have.status(200));", "pm.test('Has WAHA data', () => pm.expect(pm.response.json()).to.have.property('waha'));"], "type": "text/javascript" } }]
+        }
+      ]
+    },
+    {
+      "name": "02 Proxy",
+      "item": [
+        {
+          "name": "Test Proxy From WAHA Docker",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"proxyUrl\": \"{{proxyUrl}}\"\n}" },
+            "url": "{{baseUrl}}/api/proxy/test"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Proxy test succeeded', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().success).to.eql(true); });"], "type": "text/javascript" } }]
+        }
+      ]
+    },
+    {
+      "name": "03 Sessions",
+      "item": [
+        {
+          "name": "Create And Start Session",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"sessionName\": \"{{sessionName}}\",\n  \"proxyUrl\": \"{{proxyUrl}}\",\n  \"start\": true\n}" },
+            "url": "{{baseUrl}}/api/waha/session"
+          }
+        },
+        {
+          "name": "Download Session QR",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/waha/qr/{{sessionName}}" },
+          "description": "Use Send and Download. The successful response is an image, not JSON."
+        },
+        {
+          "name": "Start Session",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"sessionName\": \"{{sessionName}}\",\n  \"action\": \"start\"\n}" },
+            "url": "{{baseUrl}}/api/waha/session/manage"
+          }
+        },
+        {
+          "name": "Stop Session",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"sessionName\": \"{{sessionName}}\",\n  \"action\": \"stop\"\n}" },
+            "url": "{{baseUrl}}/api/waha/session/manage"
+          }
+        },
+        {
+          "name": "Restart Session",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"sessionName\": \"{{sessionName}}\",\n  \"action\": \"restart\"\n}" },
+            "url": "{{baseUrl}}/api/waha/session/manage"
+          }
+        },
+        {
+          "name": "Logout Session (Destructive)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"sessionName\": \"{{sessionName}}\",\n  \"action\": \"logout\"\n}" },
+            "url": "{{baseUrl}}/api/waha/session/manage"
+          }
+        },
+        {
+          "name": "Force Delete Session (Destructive)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"sessionName\": \"{{sessionName}}\",\n  \"action\": \"force_delete\"\n}" },
+            "url": "{{baseUrl}}/api/waha/session/manage"
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 Senders",
+      "item": [
+        { "name": "List Senders", "request": { "method": "GET", "url": "{{baseUrl}}/api/senders" } },
+        {
+          "name": "Create Or Update Sender",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"phoneNumber\": \"{{senderPhone}}\",\n  \"sessionName\": \"{{sessionName}}\",\n  \"status\": \"ACTIVE\",\n  \"maxDailyLimit\": 20,\n  \"proxyIp\": \"{{proxyServer}}\"\n}" },
+            "url": "{{baseUrl}}/api/senders"
+          }
+        },
+        {
+          "name": "Set Sender Resting",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"phoneNumber\": \"{{senderPhone}}\",\n  \"status\": \"RESTING\"\n}" },
+            "url": "{{baseUrl}}/api/senders/status"
+          }
+        },
+        {
+          "name": "Set Sender Active",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"phoneNumber\": \"{{senderPhone}}\",\n  \"status\": \"ACTIVE\"\n}" },
+            "url": "{{baseUrl}}/api/senders/status"
+          }
+        },
+        {
+          "name": "Set Sender Banned",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"phoneNumber\": \"{{senderPhone}}\",\n  \"status\": \"BANNED\"\n}" },
+            "url": "{{baseUrl}}/api/senders/status"
+          },
+          "description": "State-changing request. Confirm the selected senderPhone first."
+        }
+      ]
+    },
+    {
+      "name": "05 Messaging",
+      "item": [
+        {
+          "name": "Direct Text Send",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"sessionName\": \"{{sessionName}}\",\n  \"phoneNumber\": \"{{targetPhone}}\",\n  \"message\": \"رسالة اختبار مصرح بها\"\n}" },
+            "url": "{{baseUrl}}/api/waha/send"
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 Campaigns",
+      "item": [
+        {
+          "name": "Queue Campaign",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"campaignName\": \"{{campaignName}}\",\n  \"targetPhones\": \"{{targetPhone}}\",\n  \"messageBody\": \"{أهلاً|مرحبًا}، هذه رسالة اختبار مصرح بها\"\n}" },
+            "url": "{{baseUrl}}/api/campaign/queue"
+          }
+        },
+        { "name": "Process One Job", "request": { "method": "POST", "url": "{{baseUrl}}/api/campaign/worker" }, "description": "Use only when no other worker service is running." },
+        { "name": "Campaign Status", "request": { "method": "GET", "url": "{{baseUrl}}/api/campaign/status" } },
+        { "name": "Campaign Details", "request": { "method": "GET", "url": "{{baseUrl}}/api/campaign/queue?campaignName={{campaignName}}" } },
+        {
+          "name": "Retry All Failed",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"campaignName\": \"{{campaignName}}\",\n  \"action\": \"retry_failed\"\n}" },
+            "url": "{{baseUrl}}/api/campaign/queue"
+          }
+        },
+        {
+          "name": "Recover Stuck",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"campaignName\": \"{{campaignName}}\",\n  \"action\": \"recover_stuck\"\n}" },
+            "url": "{{baseUrl}}/api/campaign/queue"
+          },
+          "description": "May duplicate a message delivered before a crash. Confirm first."
+        },
+        { "name": "Delete Pending For Campaign", "request": { "method": "DELETE", "url": "{{baseUrl}}/api/campaign/queue?campaignName={{campaignName}}" } }
+        ,
+        {
+          "name": "Synchronous Campaign (Small Test Only)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"targetPhones\": [\"{{targetPhone}}\", \"{{secondTargetPhone}}\"],\n  \"messageBody\": \"{أهلاً|مرحبًا}، هذه رسالة اختبار مصرح بها\",\n  \"minDelayMs\": 3000,\n  \"maxDelayMs\": 8000\n}" },
+            "url": "{{baseUrl}}/api/campaign/start"
+          },
+          "description": "Sends immediately and may run for a long time. Use only for a very small authorized test; prefer Queue Campaign for normal work."
+        }
+      ]
+    },
+    {
+      "name": "07 AI Cross-Talk",
+      "item": [
+        { "name": "Run One Pair Conversation", "request": { "method": "POST", "url": "{{baseUrl}}/api/cross-talk" }, "description": "This request may run for several minutes. Do not send it twice while waiting." }
+      ]
+    },
+    {
+      "name": "08 System Audit Events",
+      "item": [
+        {
+          "name": "Record Unified Auto-Pilot Started",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"event\": \"UNIFIED_AUTOPILOT_STARTED\"\n}" },
+            "url": "{{baseUrl}}/api/activity"
+          },
+          "description": "Audit log only. This does not start the worker or Cross-Talk engine."
+        },
+        {
+          "name": "Record Unified Auto-Pilot Stopped",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"event\": \"UNIFIED_AUTOPILOT_STOPPED\"\n}" },
+            "url": "{{baseUrl}}/api/activity"
+          },
+          "description": "Audit log only. This does not stop a running process."
+        }
+      ]
+    }
+  ]
+}

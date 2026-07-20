@@ -281,6 +281,8 @@ export default function DashboardPage() {
   // QR Modal state
   const [activeQrSession, setActiveQrSession] = useState<string | null>(null);
   const [qrKey, setQrKey] = useState(0);
+  const [screenshotSession, setScreenshotSession] = useState<string | null>(null);
+  const [screenshotKey, setScreenshotKey] = useState(0);
 
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -295,7 +297,7 @@ export default function DashboardPage() {
   const [campaignResult, setCampaignResult] =
     useState<CampaignResponse | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [activeTab, setActiveTab] = useState<"overview" | "devices" | "campaigns">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "sessions" | "campaigns">("overview");
 
   const [autoPilot, setAutoPilot] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -632,7 +634,7 @@ export default function DashboardPage() {
     }
   }
 
-  async function manageSession(name: string, action: "start" | "stop" | "force_delete") {
+  async function manageSession(name: string, action: "start" | "stop" | "restart" | "logout" | "force_delete") {
     setManagingSession(`${name}-${action}`);
     try {
       const response = await fetch("/api/waha/session/manage", {
@@ -900,10 +902,10 @@ export default function DashboardPage() {
               <span className="mr-3">📊</span> Overview
             </button>
             <button 
-              onClick={() => setActiveTab("devices")} 
-              className={`w-full text-left ${activeTab === "devices" ? "tab-btn-active" : "tab-btn"}`}
+              onClick={() => setActiveTab("sessions")} 
+              className={`w-full text-left ${activeTab === "sessions" ? "tab-btn-active" : "tab-btn"}`}
             >
-              <span className="mr-3">📱</span> Devices & Proxies
+              <span className="mr-3">📱</span> Sessions
             </button>
             <button 
               onClick={() => setActiveTab("campaigns")} 
@@ -915,15 +917,9 @@ export default function DashboardPage() {
 
           <div className="mt-auto pt-10">
             <div className="flex flex-col gap-3">
-              {/* Logout button removed */}
-              <a
-                href="http://localhost:3000/dashboard/"
-                target="_blank"
-                rel="noreferrer"
-                className="btn-secondary text-center text-sm"
-              >
-                WAHA Engine UI
-              </a>
+              <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/5 px-3 py-2 text-center text-xs text-emerald-200/80">
+                WAHA sessions are managed here. Direct engine access is not required.
+              </div>
               <button
                 type="button"
                 onClick={() => void refresh()}
@@ -1045,8 +1041,8 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* ======================= DEVICES TAB ======================= */}
-          {activeTab === "devices" && (
+          {/* ======================= SESSIONS TAB ======================= */}
+          {activeTab === "sessions" && (
             <div className="fade-in flex flex-col gap-6">
 
               {/* Create Session Form */}
@@ -1168,6 +1164,20 @@ export default function DashboardPage() {
                                     {managingSession === `${session.name}-stop` ? "..." : "Stop"}
                                   </button>
                                 )}
+                                <button
+                                  onClick={() => { if (confirm(`Restart session "${session.name}"?`)) void manageSession(session.name!, "restart"); }}
+                                  disabled={managingSession === `${session.name}-restart`}
+                                  className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 rounded border border-sky-500/30 transition-colors disabled:opacity-40"
+                                >
+                                  {managingSession === `${session.name}-restart` ? "..." : "Restart"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { setScreenshotSession(session.name ?? null); setScreenshotKey((key) => key + 1); }}
+                                  className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 rounded border border-indigo-500/30 transition-colors"
+                                >
+                                  Screenshot
+                                </button>
                                 {/* Sync to DB - when session has a connected account */}
                                 {session.me?.id && (
                                   <button
@@ -1186,6 +1196,15 @@ export default function DashboardPage() {
                                     className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 rounded border border-cyan-500/30 transition-colors disabled:opacity-40"
                                   >
                                     {testingProxy ? "Testing..." : "Test Proxy"}
+                                  </button>
+                                )}
+                                {session.me?.id && (
+                                  <button
+                                    onClick={() => { if (confirm(`Log out WhatsApp from session "${session.name}"? A new QR scan will be required.`)) void manageSession(session.name!, "logout"); }}
+                                    disabled={managingSession === `${session.name}-logout`}
+                                    className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-orange-500/20 hover:bg-orange-500/30 text-orange-300 rounded border border-orange-500/30 transition-colors disabled:opacity-40"
+                                  >
+                                    {managingSession === `${session.name}-logout` ? "..." : "Logout"}
                                   </button>
                                 )}
                                 {/* Delete button */}
@@ -1711,6 +1730,33 @@ export default function DashboardPage() {
               >
                 Done
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Live WAHA browser screenshot */}
+      {screenshotSession && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm" onClick={() => setScreenshotSession(null)}>
+          <div className="glass-card w-full max-w-6xl p-5" onClick={(event) => event.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-foreground">Session Browser Screenshot</h3>
+                <p className="mt-1 font-mono text-xs text-foreground/50">{screenshotSession}</p>
+              </div>
+              <button type="button" onClick={() => setScreenshotSession(null)} className="text-2xl text-foreground/50 hover:text-foreground">×</button>
+            </div>
+            <div className="flex min-h-[320px] max-h-[70vh] items-center justify-center overflow-auto rounded-lg bg-black/40 p-2">
+              <img
+                key={screenshotKey}
+                src={`/api/waha/screenshot/${encodeURIComponent(screenshotSession)}?t=${screenshotKey}`}
+                alt={`WAHA browser screen for ${screenshotSession}`}
+                className="max-h-[68vh] max-w-full object-contain"
+              />
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setScreenshotKey((key) => key + 1)} className="btn-secondary px-4 py-2 text-sm">Refresh Screenshot</button>
+              <button type="button" onClick={() => setScreenshotSession(null)} className="btn-primary px-4 py-2 text-sm">Close</button>
             </div>
           </div>
         </div>

@@ -15,24 +15,32 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!["start", "stop", "logout", "force_delete"].includes(action)) {
+    if (!["start", "stop", "restart", "logout", "force_delete"].includes(action)) {
       return NextResponse.json(
-        { error: "Invalid action. Use start, stop, logout, or force_delete." },
+        { error: "Invalid action. Use start, stop, restart, logout, or force_delete." },
         { status: 400 }
       );
     }
 
-    if (action === "force_delete") {
+    if (action === "restart") {
       try {
         await manageWahaSession(sessionName, "stop");
-      } catch (e) {
+      } catch {
+        // A failed/stopped session may reject stop; start is still worth trying.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await manageWahaSession(sessionName, "start");
+    } else if (action === "force_delete") {
+      try {
+        await manageWahaSession(sessionName, "stop");
+      } catch {
         // Ignore stop errors, it might already be stopped or stuck
       }
       // Wait a moment for it to stop
       await new Promise(res => setTimeout(res, 1500));
       await deleteWahaSession(sessionName);
     } else {
-      await manageWahaSession(sessionName, action as any);
+      await manageWahaSession(sessionName, action as "start" | "stop" | "logout");
     }
 
     return NextResponse.json({ success: true, sessionName, action });

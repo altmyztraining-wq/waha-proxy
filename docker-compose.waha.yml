@@ -4,10 +4,10 @@ services:
     container_name: waha
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       WAHA_API_KEY: mywahakey
-      WAHA_DASHBOARD_ENABLED: "true"
+      WAHA_DASHBOARD_ENABLED: "false"
       WAHA_DASHBOARD_USERNAME: admin
       WAHA_DASHBOARD_PASSWORD: admin123
       WHATSAPP_DEFAULT_ENGINE: WEBJS
