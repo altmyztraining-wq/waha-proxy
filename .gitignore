@@ -47,3 +47,4 @@ next-env.d.ts
 .waha/
 waha_logs.txt
 *.log
+NGROK_URL.txt

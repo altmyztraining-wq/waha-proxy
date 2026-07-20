@@ -23,9 +23,23 @@ function isLocalBackendRequest(request: NextRequest) {
 }
 
 function cameThroughPublicTunnel(request: NextRequest) {
+  const forwardedHost = request.headers
+    .get("x-forwarded-host")
+    ?.split(",")[0]
+    .trim()
+    .toLowerCase()
+    .replace(/:\d+$/, "");
+  const forwardedHostIsPublic = Boolean(
+    forwardedHost &&
+      !["localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal", "[::1]"].includes(
+        forwardedHost
+      )
+  );
+
   return (
     request.headers.has("cf-connecting-ip") ||
-    request.headers.has("cf-ray")
+    request.headers.has("cf-ray") ||
+    forwardedHostIsPublic
   );
 }
 
@@ -64,6 +78,7 @@ export function proxy(request: NextRequest) {
       const target = new URL(`${pathname}${request.nextUrl.search}`, gatewayUrl);
       const headers = new Headers(request.headers);
       headers.set("x-waha-gateway-secret", gatewaySecret);
+      headers.set("ngrok-skip-browser-warning", "true");
       headers.delete("cookie");
 
       return NextResponse.rewrite(target, { request: { headers } });
